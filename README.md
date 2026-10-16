@@ -1,40 +1,88 @@
 # Claude Lid Closed
 
-A menu bar app that keeps your Mac running with the lid closed while Claude Code is working, and lets it sleep as soon as Claude is waiting for you.
+**Close your MacBook's lid while Claude Code works. It stays awake until Claude finishes or needs you, then goes to sleep.**
 
-- **Claude is working** (generating, running tools or subagents, or a turn that ended with background tasks still running): sleep is disabled, so you can close the lid and walk away. ☕ icon.
-- **Claude is waiting for you** (the turn finished, it asked a question or for permission, it hit an API error, or you pressed Esc): sleep is allowed again. If the lid is closed, the Mac goes to sleep. 🌙 icon (⌛ during the short grace period).
-- With several sessions, the Mac stays awake while any of them is working.
+[![License: MIT](https://img.shields.io/github/license/Jin-hiroo/claude-lid-closed)](LICENSE)
+[![Requires macOS 14 or later](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#install)
+[![Builds with Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](Package.swift)
+[![Driven by Claude Code hooks](https://img.shields.io/badge/Claude%20Code-hooks-D97757?logo=claude&logoColor=white)](https://code.claude.com/docs/en/hooks)
+
+[Install](#install) · [Usage](#usage) · [How it works](#how-it-works) · [Settings](#settings) · [Limits](#limits)
+
+<p>
+  <a href="docs/images/menu-lid-closed-working.png"><img src="docs/images/menu-lid-closed-working.png" alt="The Claude Lid Closed menu under its cup icon. It reads: Keeping your Mac awake: Claude is working. Lid closed, system sleep disabled. DICOMergeForMac: working, 2 min. claudeLidClosed: working, 3 min. Then Automatic Mode (checked), Open Log, and Quit (restores normal sleep)." width="398"></a>
+</p>
+
+_The menu on a MacBook with its lid closed. Two Claude Code sessions are working, so the app has turned system sleep off. Once both are waiting for you, it turns sleep back on and the Mac goes to sleep._
+
+## Overview
+
+Closing a MacBook's lid puts it to sleep even while `caffeinate` is running, unless a display and power are connected. A long Claude Code task stops the moment you close the lid and walk away. Claude Lid Closed follows your sessions through Claude Code hooks and keeps the Mac awake only while Claude is actually working.
+
+- **Close the lid mid-task.** While any session is generating, running tools or subagents, or has background tasks running, the app turns on `pmset disablesleep`, the one setting that keeps a closed MacBook running.
+- **Sleeps as soon as Claude needs you.** When a turn finishes, Claude asks a question or for permission, an API error stops it, or you press Esc, sleep is allowed again. If the lid is closed, the Mac goes to sleep.
+- **Claude Code's notification still goes out.** After a turn ends, the app waits for Claude Code's own "waiting for your input" notification before sleeping, so it can still reach your phone.
+- **Several sessions at once.** The Mac stays awake while any of them is working, and the menu lists what each one is doing.
+- **Never stuck awake.** Sleep is allowed again on battery at 15% or less, or when macOS reports the Mac is too hot. Quitting, logging out or a crash restores normal sleep, and sessions that exited or went quiet are dropped.
+- **Stays out of Claude's way.** The hook takes about 5 ms, prints nothing and always exits 0.
+- **Narrow root access.** A sudoers rule allows exactly `pmset -a disablesleep 0` and `pmset -a disablesleep 1`, and nothing else.
 
 ## Install
 
+Requirements: a MacBook with macOS 14 or later, [Claude Code](https://code.claude.com/docs/en/overview), and the Command Line Tools with Swift 6.2 or later (`xcode-select --install`; full Xcode isn't needed). Tested on macOS 26 on Apple silicon.
+
 ```sh
 git clone https://github.com/Jin-hiroo/claude-lid-closed.git
-cd claude-lid-closed
-./scripts/install.sh
+cd claude-lid-closed && ./scripts/install.sh
 ```
 
-This needs macOS 14 or later and only the Command Line Tools (no Xcode). It:
+`install.sh` asks for your password once. It:
 
 1. Builds `ClaudeLidClosed.app` and installs it to `~/Applications`.
-2. Adds `/etc/sudoers.d/claude-lid-closed`, which lets your user run exactly `pmset -a disablesleep 0` and `pmset -a disablesleep 1` without a password. It asks for your password once to install it.
-3. Adds hooks to `~/.claude/settings.json`, after backing it up to `settings.json.bak`.
+2. Adds `/etc/sudoers.d/claude-lid-closed`, which lets your user run exactly `pmset -a disablesleep 0` and `pmset -a disablesleep 1` without a password.
+3. Adds hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`), after backing it up to `settings.json.bak`. Your other settings and hooks are left as they are.
 4. Starts the app now and at every login, via `~/Library/LaunchAgents/local.ClaudeLidClosed.plist`.
 
-Sessions that were already open when you installed may not have the hooks. Restart them.
+It's safe to re-run, for example after `git pull`. To remove everything, run `./scripts/uninstall.sh`.
 
-To remove everything, run `./scripts/uninstall.sh`.
+## Usage
+
+There's nothing to configure.
+
+1. Restart any Claude Code sessions that were open before you installed, so they load the hooks.
+2. Give Claude a task. The menu bar icon turns into a cup.
+3. Close the lid and walk away.
+4. When Claude needs you, the Mac goes to sleep: about 10 s after a permission prompt, or 70 to 90 s after a turn ends or Claude asks a question, once Claude Code's notification has gone out.
+
+To see what happened, choose **Open Log** in the menu:
+
+```
+2026-10-15T19:37:30+0900 Keeping Mac awake: Claude is working
+2026-10-15T19:57:30+0900 Sleep allowed: Claude is waiting for you
+2026-10-15T19:57:30+0900 Lid is closed: sleeping now
+```
+
+To see what it's tracking right now:
+
+```console
+$ ~/Applications/ClaudeLidClosed.app/Contents/Helpers/claude-lid-hook status
+DICOMergeForMac  working  (2 min)  b6b2cf46-59eb-4882-b8d5-fcc485fbbe24
+claudeLidClosed  working  (3 min)  d8046136-1249-4270-a5f4-46b4f400aba2
+=> keep the Mac awake
+```
 
 ## How it works
 
 Closing the lid always puts a Mac to sleep, whatever apps like `caffeinate` ask for. The one switch that overrides this is the system-wide `SleepDisabled` setting (`pmset disablesleep`). Without a charger and an external display, it's the only way to keep a MacBook running with the lid shut.
 
 ```
-Claude Code ──hook event──▶ claude-lid-hook ──writes──▶ ~/Library/Application Support/ClaudeLidClosed/sessions/
-                                                                  │ watched
-                                         menu bar app ◀───────────┘
-                                         └─ sudo pmset -a disablesleep 1/0, then sleep now if the lid is closed
+Claude Code ──hook event──▶ claude-lid-hook ──writes──▶ sessions/<session id>.json
+                                                                 │ watched
+menu bar app ◀───────────────────────────────────────────────────┘
+└─ sudo pmset -a disablesleep 1/0, then sleep now if the lid is closed
 ```
+
+The session files are in `~/Library/Application Support/ClaudeLidClosed/sessions/`.
 
 - `claude-lid-hook` (inside the app bundle) runs on each hook event: `UserPromptSubmit`, `PreToolUse`/`PostToolUse`, `Notification`, `Stop`, `SubagentStart`/`SubagentStop` and so on. It records each session's state in a small JSON file. It takes about 5 ms, prints nothing and always exits 0, so it can't get in Claude's way.
 - The app watches those files and decides:
@@ -52,6 +100,16 @@ Claude Code ──hook event──▶ claude-lid-hook ──writes──▶ ~/Li
 
 ## Menu
 
+The menu bar icon shows what the app is doing:
+
+| Icon | Meaning |
+| --- | --- |
+| Cup | Claude is working: sleep is off |
+| Hourglass | Every session is waiting: sleep comes back when the grace period ends |
+| Moon | Normal sleep |
+| Pause | Automatic Mode is off |
+| Warning triangle | Setup is needed, the battery is low or the Mac is too hot: normal sleep |
+
 The menu shows:
 - The current state, lid state and the actual `SleepDisabled` value.
 - Each session with what it's doing.
@@ -59,11 +117,7 @@ The menu shows:
 - **Open Log**, which opens `~/Library/Logs/ClaudeLidClosed.log`.
 - **Quit**.
 
-From a terminal:
-
-```sh
-~/Applications/ClaudeLidClosed.app/Contents/Helpers/claude-lid-hook status
-```
+`claude-lid-hook status` prints the same session list from a terminal (see [Usage](#usage)).
 
 ## Settings
 
@@ -93,7 +147,8 @@ swift build                    # debug build
 
 # Run the app without touching pmset, pretending the lid is closed, with short timings:
 CLAUDE_LID_DRY_RUN=1 CLAUDE_LID_FAKE_LID=closed CLAUDE_LID_STATE_DIR=/tmp/lid \
-  build/ClaudeLidClosed.app/Contents/MacOS/ClaudeLidClosed -notifyTimeoutSeconds 6 -sleepGraceSeconds 2
+  build/ClaudeLidClosed.app/Contents/MacOS/ClaudeLidClosed \
+  -notifyTimeoutSeconds 6 -sleepGraceSeconds 2
 ```
 
 ## License
