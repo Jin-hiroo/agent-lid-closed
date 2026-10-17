@@ -61,6 +61,8 @@ struct MenuContent: View {
         Divider()
         Toggle("Automatic Mode", isOn: Binding(get: { controller.autoEnabled },
                                                set: { controller.setAutoEnabled($0) }))
+        Toggle("Turn Display Off When Lid Closed", isOn: Binding(get: { controller.dimEnabled },
+                                                                 set: { controller.setDimEnabled($0) }))
         Button("Open Log") { NSWorkspace.shared.open(Paths.logFile) }
         Divider()
         Button("Quit (restores normal sleep)") { NSApp.terminate(nil) }

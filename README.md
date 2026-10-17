@@ -20,6 +20,7 @@ _The menu on a MacBook with its lid closed. Two Claude Code sessions are working
 Closing a MacBook's lid puts it to sleep even while `caffeinate` is running, unless a display and power are connected. A long Claude Code task stops the moment you close the lid and walk away. Claude Lid Closed follows your sessions through Claude Code hooks and keeps the Mac awake only while Claude is actually working.
 
 - **Close the lid mid-task.** While any session is generating, running tools or subagents, or has background tasks running, the app turns on `pmset disablesleep`, the one setting that keeps a closed MacBook running.
+- **Screen off while the lid is closed.** While the app is keeping a Mac awake with its lid shut, it sets the built-in display's brightness to 0, and puts it back when you open the lid.
 - **Sleeps as soon as Claude needs you.** When a turn finishes, Claude asks a question or for permission, an API error stops it, or you press Esc, sleep is allowed again. If the lid is closed, the Mac goes to sleep.
 - **Claude Code's notification still goes out.** After a turn ends, the app waits for Claude Code's own "waiting for your input" notification before sleeping, so it can still reach your phone.
 - **Several sessions at once.** The Mac stays awake while any of them is working, and the menu lists what each one is doing.
@@ -79,7 +80,8 @@ Closing the lid always puts a Mac to sleep, whatever apps like `caffeinate` ask 
 Claude Code ──hook event──▶ claude-lid-hook ──writes──▶ sessions/<session id>.json
                                                                  │ watched
 menu bar app ◀───────────────────────────────────────────────────┘
-└─ sudo pmset -a disablesleep 1/0, then sleep now if the lid is closed
+├─ sudo pmset -a disablesleep 1/0, then sleep now if the lid is closed
+└─ built-in display brightness to 0 while the lid is closed and sleep is off; back when it opens
 ```
 
 The session files are in `~/Library/Application Support/ClaudeLidClosed/sessions/`.
@@ -88,6 +90,7 @@ The session files are in `~/Library/Application Support/ClaudeLidClosed/sessions
 - The app watches those files and decides:
   - **Any session working → disable sleep.** That includes a running subagent, and a turn that ended with `background_tasks` still running (from the `Stop` payload).
   - **All sessions waiting → enable sleep, and sleep now if the lid is closed.** It doesn't force sleep when an external display is attached (clamshell mode).
+  - **Lid closed while the app is keeping the Mac awake → display off.** It remembers the brightness, sets it to 0, and restores it when the lid opens (checked twice a second while the screen is off). If the Mac then goes to sleep with the lid still closed, the brightness stays at 0 until you open the lid. With an external display attached it does nothing, because macOS already turns the built-in panel off in clamshell mode.
 - **Grace period.** When a turn finishes, Claude Code sends its own "waiting for your input" notification about 60 s later, which can reach your phone. The app waits for that notification, up to 90 s, and sleeps 10 s after it. Permission prompts are notified immediately, so those sleep after 10 s.
 - **Esc.** No hook fires when you interrupt Claude. A session that has been quiet for 20 s gets its transcript checked for `[Request interrupted by user]`.
 
@@ -95,7 +98,8 @@ The session files are in `~/Library/Application Support/ClaudeLidClosed/sessions
 
 - **Battery.** On battery at 15% or less, sleep is allowed again, and the Mac sleeps if the lid is closed.
 - **Heat.** At macOS thermal state "serious" or worse, the same happens. A fanless MacBook Air in a bag gets hot.
-- **Quitting.** Quitting the app (menu, logout, `launchctl`, Ctrl-C) always re-enables sleep. If the app crashes, launchd restarts it, and the restarted app undoes the setting it left behind.
+- **Quitting.** Quitting the app (menu, logout, `launchctl`, Ctrl-C) always re-enables sleep and restores the display brightness. If the app crashes, launchd restarts it, and the restarted app undoes what it left behind: the sleep setting, and a dark screen (the saved brightness is kept in `~/Library/Application Support/ClaudeLidClosed/dimmed-brightness`).
+- **Never a black screen.** Brightness is never restored below 10%, so a reading of 0 taken while macOS had already turned the backlight off can't leave you with a screen you can't see.
 - **Ended sessions.** A session whose Claude Code process has exited is dropped. So is a "working" session with no hook event for 30 minutes, or a background-only one with none for 60 minutes.
 
 ## Menu
@@ -111,9 +115,10 @@ The menu bar icon shows what the app is doing:
 | Warning triangle | Setup is needed, the battery is low or the Mac is too hot: normal sleep |
 
 The menu shows:
-- The current state, lid state and the actual `SleepDisabled` value.
+- The current state, lid state, the actual `SleepDisabled` value, and "display off" while the app has the screen dark.
 - Each session with what it's doing.
 - An **Automatic Mode** switch (off = never touch sleep).
+- A **Turn Display Off When Lid Closed** switch (on by default; off = leave the screen alone).
 - **Open Log**, which opens `~/Library/Logs/ClaudeLidClosed.log`.
 - **Quit**.
 
@@ -136,6 +141,7 @@ Change these with `defaults write local.ClaudeLidClosed <key> <number>`. They ta
 - **Approving a permission prompt, then immediately closing the lid.** No hook fires when you approve, so until that tool finishes the session still counts as waiting, and the Mac can sleep during it. This doesn't happen in bypass-permissions mode.
 - **Scheduled wakeups** (`/loop`, cron-style tasks) don't keep the Mac awake. When Claude ends a turn to wait for a timer, the Mac sleeps.
 - **Manual sleep.** While the app holds sleep off, macOS may ignore manual sleep (Apple menu → Sleep). Turn off Automatic Mode or quit the app first.
+- **Display brightness uses a private macOS framework.** Apple silicon has no public API for the built-in display's brightness, so the app calls `DisplayServices` (what the brightness keys use). If a future macOS removes it, the screen is simply left alone and the log says "Could not turn the display off".
 - **Hosts other than the CLI.** Claude Code hosts that don't load `~/.claude/settings.json` (some SDK-based apps) won't send hooks. Those sessions are invisible to the app.
 
 ## Development
@@ -150,6 +156,8 @@ CLAUDE_LID_DRY_RUN=1 CLAUDE_LID_FAKE_LID=closed CLAUDE_LID_STATE_DIR=/tmp/lid \
   build/ClaudeLidClosed.app/Contents/MacOS/ClaudeLidClosed \
   -notifyTimeoutSeconds 6 -sleepGraceSeconds 2
 ```
+
+In a dry run, brightness changes are logged instead of applied, and the pretend lid opens when a file named `lid-open` appears in the state directory (`touch /tmp/lid/lid-open`).
 
 ## License
 

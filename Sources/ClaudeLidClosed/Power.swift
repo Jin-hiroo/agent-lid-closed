@@ -3,6 +3,7 @@ import Foundation
 import IOKit
 import IOKit.ps
 import IOKit.pwr_mgt
+import LidCore
 
 /// macOS power state and control.
 ///
@@ -13,11 +14,15 @@ import IOKit.pwr_mgt
 enum Power {
     static let sudoersFile = "/etc/sudoers.d/claude-lid-closed"
 
-    /// `CLAUDE_LID_DRY_RUN=1` logs pmset calls instead of running them;
-    /// `CLAUDE_LID_FAKE_LID=closed` pretends the lid is closed. For testing.
+    /// `CLAUDE_LID_DRY_RUN=1` logs pmset and brightness calls instead of running them;
+    /// `CLAUDE_LID_FAKE_LID=closed` pretends the lid is closed until a file named `lid-open`
+    /// appears in the state directory. For testing.
     static let dryRun = ProcessInfo.processInfo.environment["CLAUDE_LID_DRY_RUN"] == "1"
-    private static let fakeLidClosed = dryRun && ProcessInfo.processInfo.environment["CLAUDE_LID_FAKE_LID"] == "closed"
+    private static let fakeLid = dryRun && ProcessInfo.processInfo.environment["CLAUDE_LID_FAKE_LID"] == "closed"
     @MainActor private static var dryRunSleepDisabled = false
+    @MainActor private static var dryRunBrightness: Float = 0.5
+    /// The built-in display's ID, remembered because a closed lid may drop it from the display list.
+    @MainActor private static var knownBuiltinDisplay: CGDirectDisplayID?
 
     struct Battery: Equatable {
         var percent: Int
@@ -59,7 +64,8 @@ enum Power {
     }
 
     static var lidClosed: Bool {
-        fakeLidClosed || rootDomainBool("AppleClamshellState") == true
+        if dryRun { return fakeLid && !FileManager.default.fileExists(atPath: Paths.stateDir.appendingPathComponent("lid-open").path) }
+        return rootDomainBool("AppleClamshellState") == true
     }
 
     /// With an external display attached, a closed lid means clamshell mode, not "put it away".
@@ -69,6 +75,27 @@ enum Power {
         var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return false }
         return displays.prefix(Int(count)).contains { CGDisplayIsBuiltin($0) == 0 }
+    }
+
+    /// Backlight level of the built-in display, 0...1; nil if it can't be read.
+    @MainActor
+    static var displayBrightness: Float? {
+        if dryRun { return dryRunBrightness }
+        guard let services = DisplayServices.shared, let display = builtinDisplay() else { return nil }
+        var value: Float = 0
+        return services.get(display, &value) == 0 ? value : nil
+    }
+
+    /// Sets the built-in display's backlight level (0 = off). Returns false if it didn't take.
+    @MainActor
+    static func setDisplayBrightness(_ value: Float) -> Bool {
+        if dryRun {
+            dryRunBrightness = value
+            Log.write("[dry run] display brightness \(Int((value * 100).rounded()))%")
+            return true
+        }
+        guard let services = DisplayServices.shared, let display = builtinDisplay() else { return false }
+        return services.set(display, value) == 0
     }
 
     static func sleepNow() {
@@ -97,6 +124,36 @@ enum Power {
             return Battery(percent: current * 100 / max, onBattery: onBattery)
         }
         return nil
+    }
+
+    @MainActor
+    private static func builtinDisplay() -> CGDirectDisplayID? {
+        var count: UInt32 = 0
+        if CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 {
+            var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+            if CGGetOnlineDisplayList(count, &displays, &count) == .success,
+               let builtin = displays.prefix(Int(count)).first(where: { CGDisplayIsBuiltin($0) != 0 }) {
+                knownBuiltinDisplay = builtin
+            }
+        }
+        return knownBuiltinDisplay
+    }
+
+    /// Brightness has no public API on Apple silicon; this is the private framework that System
+    /// Settings and the brightness keys use. If it's ever missing, brightness calls just fail.
+    private struct DisplayServices {
+        typealias Get = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+        typealias Set = @convention(c) (CGDirectDisplayID, Float) -> Int32
+
+        let get: Get
+        let set: Set
+
+        static let shared: DisplayServices? = {
+            guard let handle = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY),
+                  let get = dlsym(handle, "DisplayServicesGetBrightness"),
+                  let set = dlsym(handle, "DisplayServicesSetBrightness") else { return nil }
+            return DisplayServices(get: unsafeBitCast(get, to: Get.self), set: unsafeBitCast(set, to: Set.self))
+        }()
     }
 
     private static func rootDomainBool(_ key: String) -> Bool? {

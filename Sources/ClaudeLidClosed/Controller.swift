@@ -4,6 +4,7 @@ import Observation
 
 /// Keeps the Mac awake, lid closed included, while any Claude Code session is working, and
 /// lets it sleep again (right away, if the lid is closed) once they're all waiting for you.
+/// While it's awake with the lid closed, the built-in display's backlight is switched off.
 @MainActor
 @Observable
 final class Controller {
@@ -24,6 +25,12 @@ final class Controller {
     private(set) var sleepDisabled = false
     private(set) var lastError: String?
     private(set) var autoEnabled: Bool
+    private(set) var dimEnabled: Bool
+    /// This app has turned the built-in display's backlight off.
+    private(set) var displayDimmed = false
+
+    /// Restoring never goes below this, so a brightness read of 0 can't leave a black screen.
+    private static let minimumRestoredBrightness: Float = 0.1
 
     @ObservationIgnored private let store = SessionStore()
     @ObservationIgnored private var settings = LidSettings()
@@ -39,10 +46,15 @@ final class Controller {
     @ObservationIgnored private var signalSources: [DispatchSourceSignal] = []
     @ObservationIgnored private let interrupts = InterruptCache()
     @ObservationIgnored private var loggedSummary = ""
+    /// Brightness to put back when the lid opens.
+    @ObservationIgnored private var savedBrightness: Float?
+    @ObservationIgnored private var lidWatcher: Task<Void, Never>?
+    @ObservationIgnored private var loggedDisplayError = ""
 
     init() {
-        UserDefaults.standard.register(defaults: ["autoEnabled": true])
+        UserDefaults.standard.register(defaults: ["autoEnabled": true, "dimDisplay": true])
         autoEnabled = UserDefaults.standard.bool(forKey: "autoEnabled")
+        dimEnabled = UserDefaults.standard.bool(forKey: "dimDisplay")
     }
 
     func start() {
@@ -53,7 +65,13 @@ final class Controller {
             holding = Power.sleepDisabled
             if !holding { try? FileManager.default.removeItem(at: Paths.holdMarker) }
         }
-        Log.write("Started\(Power.dryRun ? " (dry run)" : "")\(holding ? "; sleep still disabled from last run" : "")")
+        // A dimmed display left behind by a crash: take it over, and evaluate() restores it once the lid is open.
+        if let data = try? Data(contentsOf: Paths.dimMarker),
+           let saved = Float(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)) {
+            savedBrightness = saved
+            displayDimmed = true
+        }
+        Log.write("Started\(Power.dryRun ? " (dry run)" : "")\(holding ? "; sleep still disabled from last run" : "")\(displayDimmed ? "; display still dimmed from last run" : "")")
 
         ticker = Task { [weak self] in
             while !Task.isCancelled {
@@ -79,10 +97,11 @@ final class Controller {
         evaluate()
     }
 
-    /// On quit: never leave the Mac unable to sleep.
+    /// On quit: never leave the Mac unable to sleep or the display dark.
     func shutdown() {
         guard started else { return }
         ticker?.cancel()
+        if displayDimmed { restoreDisplay() }
         guard holding else { return }
         if Power.allowSleepNow() {
             holding = false
@@ -98,6 +117,13 @@ final class Controller {
         UserDefaults.standard.set(enabled, forKey: "autoEnabled")
         Log.write("Automatic mode \(enabled ? "on" : "off")")
         evaluate()
+    }
+
+    func setDimEnabled(_ enabled: Bool) {
+        dimEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "dimDisplay")
+        Log.write("Dim display with lid closed \(enabled ? "on" : "off")")
+        updateDisplayDimming()
     }
 
     func evaluate() {
@@ -123,6 +149,7 @@ final class Controller {
         sleepDisabled = Power.sleepDisabled
         blocker = currentBlocker()
         logSessionsIfChanged()
+        updateDisplayDimming()
 
         guard !transitioning, Date() >= retryAt else { return }
         if result.keepAwake && blocker == nil {
@@ -159,6 +186,7 @@ final class Controller {
 
     var detail: String {
         var text = "Lid \(lidClosed ? "closed" : "open") · system sleep \(sleepDisabled ? "disabled" : "enabled")"
+        if displayDimmed { text += " · display off" }
         if let lastError { text += "\n\(lastError)" }
         return text
     }
@@ -223,6 +251,63 @@ final class Controller {
                 Power.sleepNow()
             }
         }
+    }
+
+    /// Backlight off while the lid is closed and this app is keeping the Mac awake, back on when the
+    /// lid opens. Once dimmed it stays dimmed until then, even if sleep comes back and the Mac
+    /// goes to sleep, so waking it with the lid open is what undoes it. With an external display
+    /// the lid means clamshell mode, where macOS already turns the built-in panel off.
+    private func updateDisplayDimming() {
+        let wanted = dimEnabled && Power.lidClosed && (holding || displayDimmed) && !Power.hasExternalDisplay
+        if wanted && !displayDimmed {
+            dimDisplay()
+        } else if !wanted && displayDimmed {
+            restoreDisplay()
+        }
+        if displayDimmed && lidWatcher == nil { watchLid() }
+    }
+
+    /// While dimmed, notices the lid opening within half a second rather than on the next 5 s tick.
+    private func watchLid() {
+        lidWatcher = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.updateDisplayDimming()
+            }
+        }
+    }
+
+    private func dimDisplay() {
+        guard let current = Power.displayBrightness else { return logDisplayError("Could not read the display brightness") }
+        // Marker first: if the app dies between here and the restore, the next launch puts it back.
+        try? Data("\(current)".utf8).write(to: Paths.dimMarker)
+        guard Power.setDisplayBrightness(0) else {
+            try? FileManager.default.removeItem(at: Paths.dimMarker)
+            return logDisplayError("Could not turn the display off")
+        }
+        loggedDisplayError = ""
+        savedBrightness = current
+        displayDimmed = true
+        Log.write("Lid closed: display off (was \(Int((current * 100).rounded()))%)")
+    }
+
+    private func restoreDisplay() {
+        let level = max(savedBrightness ?? 0.5, Self.minimumRestoredBrightness)
+        guard Power.setDisplayBrightness(level) else { return logDisplayError("Could not turn the display back on") }
+        loggedDisplayError = ""
+        lidWatcher?.cancel()
+        lidWatcher = nil
+        savedBrightness = nil
+        displayDimmed = false
+        try? FileManager.default.removeItem(at: Paths.dimMarker)
+        Log.write("Display back on at \(Int((level * 100).rounded()))%")
+    }
+
+    /// Logs a failure once, not on every retry.
+    private func logDisplayError(_ message: String) {
+        guard message != loggedDisplayError else { return }
+        loggedDisplayError = message
+        Log.write(message)
     }
 
     private func currentBlocker() -> Blocker? {

@@ -17,6 +17,9 @@ public enum Paths {
     /// Exists while the app has sleep disabled, so a crashed app can undo it on its next launch.
     public static var holdMarker: URL { stateDir.appendingPathComponent("holding") }
 
+    /// Exists while the app has the display dimmed; holds the brightness to put back.
+    public static var dimMarker: URL { stateDir.appendingPathComponent("dimmed-brightness") }
+
     public static var logFile: URL {
         if ProcessInfo.processInfo.environment["CLAUDE_LID_STATE_DIR"] != nil {
             return stateDir.appendingPathComponent("ClaudeLidClosed.log")
