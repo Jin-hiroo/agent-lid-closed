@@ -1,84 +1,104 @@
 #!/bin/bash
-# Builds Claude Lid Closed, installs it to ~/Applications, starts it at login, and registers
-# its hooks in your Claude Code settings. Asks for your password once, for the sudoers rule.
-# Safe to re-run (e.g. after pulling changes).
+# Install Agent Lid Closed, including an upgrade from Claude Lid Closed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-LABEL=local.ClaudeLidClosed
-APP="$HOME/Applications/ClaudeLidClosed.app"
-HOOK="$APP/Contents/Helpers/claude-lid-hook"
-SUDOERS=/etc/sudoers.d/claude-lid-closed
+LABEL=local.AgentLidClosed
+LEGACY_LABEL=local.ClaudeLidClosed
+APP="$HOME/Applications/AgentLidClosed.app"
+LEGACY_APP="$HOME/Applications/ClaudeLidClosed.app"
+HOOK="$APP/Contents/Helpers/agent-lid-hook"
+SUDOERS=/etc/sudoers.d/agent-lid-closed
+LEGACY_SUDOERS=/etc/sudoers.d/claude-lid-closed
 AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
-SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+CLAUDE_SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+CODEX_HOOKS="${CODEX_HOME:-$HOME/.codex}/hooks.json"
+STATE="$HOME/Library/Application Support/AgentLidClosed"
+LEGACY_STATE="$HOME/Library/Application Support/ClaudeLidClosed"
 USER_NAME="$(id -un)"
 
 echo "==> Building"
 ./scripts/build-app.sh
 
-echo "==> Stopping any running copy (it re-enables sleep as it quits)"
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-pkill -x ClaudeLidClosed 2>/dev/null || true
-for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x ClaudeLidClosed >/dev/null || break; sleep 0.5; done
+# Validate configs before stopping the running app or touching system settings.
+/usr/bin/python3 - "$CLAUDE_SETTINGS" "$CODEX_HOOKS" <<'PY'
+import json, os, sys
+sys.path.insert(0, 'scripts')
+from hooks import validate
+for path in sys.argv[1:]:
+    if os.path.exists(path):
+        with open(path) as f:
+            settings = json.load(f)
+        validate(settings)
+PY
+
+# Validate/create the aliases before stopping either app. Existing hooks can keep
+# reporting safely because the live directory and its lock are never moved.
+/usr/bin/python3 scripts/migrate-state.py "$LEGACY_STATE" "$STATE"
+
+echo "==> Checking narrow pmset access"
+if { [ -f "$SUDOERS" ] || [ -f "$LEGACY_SUDOERS" ]; } && \
+   sudo -n -l /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1 && \
+   sudo -n -l /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1; then
+    echo "Reusing the existing pmset sudoers rule"
+else
+    rule="$(mktemp)"
+    trap 'rm -f "$rule"' EXIT
+    cat >"$rule" <<RULE
+# Installed by Agent Lid Closed; allows only the two sleep settings it needs.
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1
+RULE
+    /usr/sbin/visudo -cqf "$rule"
+    sudo install -m 0440 -o root -g wheel "$rule" "$SUDOERS"
+    rm -f "$rule"
+    trap - EXIT
+fi
+
+echo "==> Stopping running copies (restores sleep and brightness)"
+for label in "$LABEL" "$LEGACY_LABEL"; do
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+done
+for name in AgentLidClosed ClaudeLidClosed; do
+    pkill -x "$name" 2>/dev/null || true
+    for _ in {1..20}; do pgrep -x "$name" >/dev/null || break; sleep 0.25; done
+    if pgrep -x "$name" >/dev/null; then echo "error: $name did not stop" >&2; exit 1; fi
+done
+sudo -n /usr/bin/pmset -a disablesleep 0
 
 echo "==> Installing $APP"
 mkdir -p "$HOME/Applications"
 rm -rf "$APP"
-cp -R build/ClaudeLidClosed.app "$APP"
+cp -R build/AgentLidClosed.app "$APP"
+# Keep the old helper path callable, without leaving an old app that could run too.
+rm -rf "$LEGACY_APP"
+mkdir -p "$LEGACY_APP/Contents/Helpers"
+ln -s "$HOOK" "$LEGACY_APP/Contents/Helpers/claude-lid-hook"
+rm -f "$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
 
-echo "==> Allowing '$USER_NAME' to run 'pmset -a disablesleep 0|1' without a password"
-rule="$(mktemp)"
-cat >"$rule" <<EOF
-# Installed by Claude Lid Closed (scripts/install.sh); removed by scripts/uninstall.sh.
-# Lets the menu bar app keep the Mac awake with the lid closed while Claude Code works.
-$USER_NAME ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1
-EOF
-/usr/sbin/visudo -cqf "$rule"
-if ! sudo cmp -s "$rule" "$SUDOERS" 2>/dev/null; then
-    sudo install -m 0440 -o root -g wheel "$rule" "$SUDOERS"
-fi
-rm -f "$rule"
-sudo -k # forget the cached password, so the next check proves the rule works on its own
-if ! sudo -n /usr/bin/pmset -a disablesleep 0; then
-    echo "error: the sudoers rule in $SUDOERS doesn't work" >&2
-    exit 1
-fi
-
-echo "==> Adding hooks to $SETTINGS"
-/usr/bin/python3 scripts/hooks.py install "$SETTINGS" "$HOOK"
+echo "==> Registering Claude Code and Codex hooks"
+/usr/bin/python3 scripts/hooks.py install "$CLAUDE_SETTINGS" "$HOOK" claude
+/usr/bin/python3 scripts/hooks.py install "$CODEX_HOOKS" "$HOOK" codex
 
 echo "==> Starting at login"
 mkdir -p "$(dirname "$AGENT")"
-cat >"$AGENT" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>$LABEL</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>$APP/Contents/MacOS/ClaudeLidClosed</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<!-- Restart after a crash, so a crash can't leave sleep disabled. Quitting from the menu stays quit. -->
-	<key>KeepAlive</key>
-	<dict>
-		<key>SuccessfulExit</key>
-		<false/>
-	</dict>
-	<key>ProcessType</key>
-	<string>Interactive</string>
-</dict>
-</plist>
-EOF
+/usr/bin/python3 - "$AGENT" "$APP/Contents/MacOS/AgentLidClosed" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], 'wb') as f:
+    plistlib.dump({
+        'Label': 'local.AgentLidClosed',
+        'ProgramArguments': [sys.argv[2]],
+        'RunAtLoad': True,
+        'KeepAlive': {'SuccessfulExit': False},
+        'ProcessType': 'Interactive',
+    }, f)
+PY
 launchctl bootstrap "gui/$(id -u)" "$AGENT"
 
-cat <<EOF
+cat <<DONE
 
-Done. The moon/cup icon in the menu bar is Claude Lid Closed.
-New Claude Code sessions pick up the hooks automatically; restart sessions that are already open.
-Check what it sees any time with:
-  "$HOOK" status
-EOF
+Done. Agent Lid Closed is running in the menu bar.
+Restart Claude Code and Codex sessions to load the new hooks.
+In Codex, open /hooks and review/trust the Agent Lid Closed command hooks.
+Hooks disabled by Codex configuration or policy will not run.
+Status: "$HOOK" status
+DONE

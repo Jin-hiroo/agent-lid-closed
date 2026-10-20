@@ -2,7 +2,7 @@ import AppKit
 import LidCore
 import Observation
 
-/// Keeps the Mac awake, lid closed included, while any Claude Code session is working, and
+/// Keeps the Mac awake, lid closed included, while any Claude or Codex session is working, and
 /// lets it sleep again (right away, if the lid is closed) once they're all waiting for you.
 /// While it's awake with the lid closed, the built-in display's backlight is switched off.
 @MainActor
@@ -52,6 +52,7 @@ final class Controller {
     @ObservationIgnored private var loggedDisplayError = ""
 
     init() {
+        Paths.migratePreferences(to: .standard)
         UserDefaults.standard.register(defaults: ["autoEnabled": true, "dimDisplay": true])
         autoEnabled = UserDefaults.standard.bool(forKey: "autoEnabled")
         dimEnabled = UserDefaults.standard.bool(forKey: "dimDisplay")
@@ -141,7 +142,7 @@ final class Controller {
                                         isInterrupted: interrupts.endsWithInterrupt)
         for id in result.deadSessionIDs {
             store.remove(id)
-            Log.write("Session \(id.prefix(8)) is gone (Claude Code exited)")
+            Log.write("Session \(AgentProvider.shortSessionID(id)) is gone (agent process exited)")
         }
         for key in result.orphanSessionKeys { store.remove(key) }
         evaluation = result
@@ -154,14 +155,14 @@ final class Controller {
         guard !transitioning, Date() >= retryAt else { return }
         if result.keepAwake && blocker == nil {
             pendingSleepAt = nil
-            if !holding { transition(hold: true, why: "Claude is working") }
+            if !holding { transition(hold: true, why: "an agent is working") }
         } else if holding {
             if let blocker {
                 pendingSleepAt = nil
                 transition(hold: false, why: Self.describe(blocker))
             } else if now >= result.sleepAllowedAt {
                 pendingSleepAt = nil
-                transition(hold: false, why: result.sessions.isEmpty ? "no Claude sessions" : "Claude is waiting for you")
+                transition(hold: false, why: result.sessions.isEmpty ? "no agent sessions" : "all agents are waiting for you")
             } else {
                 let at = Date(timeIntervalSince1970: result.sleepAllowedAt)
                 if at != pendingSleepAt { evaluate(at: at) }
@@ -178,10 +179,10 @@ final class Controller {
         if let blocker { return Self.describe(blocker) }
         if holding, let pendingSleepAt {
             let seconds = max(0, Int(pendingSleepAt.timeIntervalSinceNow.rounded(.up)))
-            return "Claude is waiting: Mac can sleep in \(seconds) s"
+            return "Agents are waiting: Mac can sleep in \(seconds) s"
         }
-        if holding || evaluation.keepAwake { return "Keeping your Mac awake: Claude is working" }
-        return evaluation.sessions.isEmpty ? "No Claude Code sessions: normal sleep" : "Claude is waiting for you: normal sleep"
+        if holding || evaluation.keepAwake { return "Keeping your Mac awake: an agent is working" }
+        return evaluation.sessions.isEmpty ? "No agent sessions: normal sleep" : "All agents are waiting for you: normal sleep"
     }
 
     var detail: String {
@@ -331,7 +332,7 @@ final class Controller {
     }
 
     private func logSessionsIfChanged() {
-        let summary = evaluation.sessions.map { "\($0.project) \($0.label)" }.joined(separator: "; ")
+        let summary = evaluation.sessions.map { "\($0.provider.name) · \($0.project) \($0.label)" }.joined(separator: "; ")
         guard summary != loggedSummary else { return }
         loggedSummary = summary
         Log.write("Sessions: \(summary.isEmpty ? "none" : summary)")

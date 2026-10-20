@@ -1,7 +1,7 @@
 import Foundation
 import LidCore
 
-/// Appends to ~/Library/Logs/ClaudeLidClosed.log; rotated once it passes 1 MB.
+/// Appends to ~/Library/Logs/AgentLidClosed.log; rotated once it passes 1 MB.
 enum Log {
     private static let maxSize = 1_000_000
 

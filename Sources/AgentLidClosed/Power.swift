@@ -12,13 +12,19 @@ import LidCore
 /// setting, `pmset -a disablesleep 1`, which needs root: install.sh adds a sudoers rule
 /// allowing exactly `pmset -a disablesleep 0|1` without a password.
 enum Power {
-    static let sudoersFile = "/etc/sudoers.d/claude-lid-closed"
+    static let sudoersFile = "/etc/sudoers.d/agent-lid-closed"
+    static let legacySudoersFile = "/etc/sudoers.d/claude-lid-closed"
 
-    /// `CLAUDE_LID_DRY_RUN=1` logs pmset and brightness calls instead of running them;
-    /// `CLAUDE_LID_FAKE_LID=closed` pretends the lid is closed until a file named `lid-open`
+    /// `AGENT_LID_DRY_RUN=1` logs pmset and brightness calls instead of running them;
+    /// `AGENT_LID_FAKE_LID=closed` pretends the lid is closed until a file named `lid-open`
     /// appears in the state directory. For testing.
-    static let dryRun = ProcessInfo.processInfo.environment["CLAUDE_LID_DRY_RUN"] == "1"
-    private static let fakeLid = dryRun && ProcessInfo.processInfo.environment["CLAUDE_LID_FAKE_LID"] == "closed"
+    static let dryRun = environment("DRY_RUN") == "1"
+    private static let fakeLid = dryRun && environment("FAKE_LID") == "closed"
+
+    private static func environment(_ suffix: String) -> String? {
+        let env = ProcessInfo.processInfo.environment
+        return env["AGENT_LID_" + suffix] ?? env["CLAUDE_LID_" + suffix]
+    }
     @MainActor private static var dryRunSleepDisabled = false
     @MainActor private static var dryRunBrightness: Float = 0.5
     /// The built-in display's ID, remembered because a closed lid may drop it from the display list.
@@ -31,6 +37,7 @@ enum Power {
 
     static var isSetUp: Bool {
         dryRun || FileManager.default.fileExists(atPath: sudoersFile)
+            || FileManager.default.fileExists(atPath: legacySudoersFile)
     }
 
     /// Turns lid-closed (and all other) sleep off or back on. Returns an error message on failure.
