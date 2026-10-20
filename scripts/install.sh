@@ -37,6 +37,7 @@ PY
 /usr/bin/python3 scripts/migrate-state.py "$LEGACY_STATE" "$STATE"
 
 echo "==> Checking narrow pmset access"
+sudo -k # Cached admin credentials must not make a broken rule appear reusable.
 if { [ -f "$SUDOERS" ] || [ -f "$LEGACY_SUDOERS" ]; } && \
    sudo -n -l /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1 && \
    sudo -n -l /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1; then
@@ -53,6 +54,7 @@ RULE
     rm -f "$rule"
     trap - EXIT
 fi
+sudo -k # Verify the installed/reused rule independently of any sudo login above.
 
 echo "==> Stopping running copies (restores sleep and brightness)"
 for label in "$LABEL" "$LEGACY_LABEL"; do
