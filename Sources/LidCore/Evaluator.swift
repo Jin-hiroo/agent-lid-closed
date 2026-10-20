@@ -12,6 +12,7 @@ public struct SessionSnapshot: Identifiable, Sendable, Equatable {
 
     public let id: String
     public let project: String
+    public let provider: AgentProvider
     public let activity: Activity
     /// When the session entered its current activity.
     public let since: Date
@@ -33,7 +34,7 @@ public struct SessionSnapshot: Identifiable, Sendable, Equatable {
 
 public struct Evaluation: Sendable, Equatable {
     public var sessions: [SessionSnapshot] = []
-    /// Sessions whose Claude Code process has exited.
+    /// Sessions whose owning process has exited.
     public var deadSessionIDs: [String] = []
     /// Subagent markers left without a session record.
     public var orphanSessionKeys: [String] = []
@@ -44,7 +45,7 @@ public struct Evaluation: Sendable, Equatable {
     public init() {}
 }
 
-/// Decides, from the stored session states, whether Claude needs the Mac awake.
+/// Decides whether any agent session needs the Mac awake.
 public enum Evaluator {
     /// A "working" session this quiet gets its transcript checked for an Esc interrupt.
     static let interruptCheckDelay: TimeInterval = 20
@@ -63,7 +64,7 @@ public enum Evaluator {
                 result.deadSessionIDs.append(record.sessionID)
                 continue
             }
-            let interrupted = record.state == .working
+            let interrupted = record.client == .claude && record.state == .working
                 && now - record.updatedAt >= interruptCheckDelay
                 && record.transcriptPath.map(isInterrupted) == true
             result.sessions.append(snapshot(of: record, agentActivity: contents.agentActivity[key] ?? [],
@@ -114,8 +115,8 @@ public enum Evaluator {
             keepsAwake = true
         }
 
-        let project = record.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? String(record.sessionID.prefix(8))
-        return SessionSnapshot(id: record.sessionID, project: project, activity: activity,
+        let project = record.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? AgentProvider.shortSessionID(record.sessionID)
+        return SessionSnapshot(id: record.sessionID, project: project, provider: record.client, activity: activity,
                                since: Date(timeIntervalSince1970: since), keepsAwake: keepsAwake,
                                sleepAllowedAt: sleepAllowedAt)
     }

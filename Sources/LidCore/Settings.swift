@@ -1,6 +1,6 @@
 import Foundation
 
-/// Tunables. Override with `defaults write local.ClaudeLidClosed <key> <value>`.
+/// Tunables. Override with `defaults write local.AgentLidClosed <key> <value>`.
 public struct LidSettings: Sendable {
     /// A "working" session with no hook event for this long is treated as stuck.
     public var workingStale: TimeInterval = 30 * 60

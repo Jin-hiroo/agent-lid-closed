@@ -1,6 +1,6 @@
 import Foundation
 
-/// The fields of a Claude Code hook payload that matter here. Everything else is ignored.
+/// Shared Claude Code / Codex hook fields. Everything else is ignored.
 public struct HookInput: Decodable, Sendable {
     public var event: String
     public var sessionID: String
@@ -86,7 +86,7 @@ public enum HookLogic {
         "failed", "error", "killed", "stopped", "cancelled", "canceled", "timeout", "timed_out",
     ]
 
-    public static func action(for input: HookInput) -> HookAction {
+    public static func action(for input: HookInput, provider: AgentProvider = .claude) -> HookAction {
         if input.event == "SessionEnd" { return .endSession }
         if let agent = input.agentID, !agent.isEmpty {
             // Inside a subagent: track it separately so it can't overwrite the main agent's state.
@@ -99,10 +99,22 @@ public enum HookLogic {
         case "UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "ElicitationResult":
             return .set(.working, reason: "working", notified: false)
         case "PreToolUse":
+            if provider == .codex && input.toolName?.split(separator: ".").last == "request_user_input" {
+                return .set(.waiting, reason: "question", notified: true)
+            }
             if let reason = userInputTools[input.toolName ?? ""] {
                 return .set(.waiting, reason: reason, notified: false)
             }
             return .set(.working, reason: "working", notified: false)
+        case "PermissionRequest" where provider == .codex:
+            // Another permission hook can auto-allow the command. There is no
+            // approval-accepted event, so keep the hold through the command;
+            // otherwise a long approved tool could be put to sleep after 10 s.
+            return .set(.working, reason: "working", notified: false)
+        case "Interrupt" where provider == .codex:
+            return .set(.waiting, reason: "interrupted", notified: true)
+        case "PreCompact", "PostCompact":
+            return provider == .codex ? .keepState : .ignore
         case "Notification":
             if input.notificationType == "idle_prompt" {
                 return .set(.waiting, reason: nil, notified: true)
@@ -119,7 +131,7 @@ public enum HookLogic {
             }
             return running
                 ? .set(.background, reason: "background tasks", notified: false)
-                : .set(.waiting, reason: "finished", notified: false)
+                : .set(.waiting, reason: "finished", notified: provider == .codex)
         case "StopFailure":
             return .set(.waiting, reason: "API error", notified: false)
         default:
@@ -127,9 +139,9 @@ public enum HookLogic {
         }
     }
 
-    /// Applies `action` to the stored session. `owner` is the Claude Code process that ran the hook.
+    /// Applies `action` to the stored session. `owner` is the process that ran the hook.
     public static func apply(_ action: HookAction, input: HookInput, owner: ProcessIdentity?,
-                             store: SessionStore, now: Double) throws {
+                             store: SessionStore, now: Double, provider: AgentProvider = .claude) throws {
         let existing = store.load(input.sessionID)
         func fresh(_ state: AgentState, _ reason: String) -> SessionRecord {
             SessionRecord(sessionID: input.sessionID, state: state, reason: reason, notified: false,
@@ -169,6 +181,7 @@ public enum HookLogic {
             }
         }
         record.updatedAt = now
+        record.provider = provider
         if let owner {
             record.pid = owner.pid
             record.pidStart = owner.startTime
