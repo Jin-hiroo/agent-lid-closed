@@ -1,158 +1,165 @@
-# Claude Lid Closed
+# Agent Lid Closed
 
-**Close your MacBook's lid while Claude Code works. It stays awake until Claude finishes or needs you, then goes to sleep.**
+**Close your MacBook's lid while Claude Code or Codex works. Your Mac stays awake with the screen at 0% brightness, then sleeps when every agent is waiting for you.**
 
-[![License: MIT](https://img.shields.io/github/license/Jin-hiroo/claude-lid-closed)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Requires macOS 14 or later](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#install)
-[![Builds with Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](Package.swift)
-[![Driven by Claude Code hooks](https://img.shields.io/badge/Claude%20Code-hooks-D97757?logo=claude&logoColor=white)](https://code.claude.com/docs/en/hooks)
+[![Builds with Swift 6.2 or later](https://img.shields.io/badge/Swift-6.2%2B-F05138?logo=swift&logoColor=white)](Package.swift)
+[![Claude Code and Codex](https://img.shields.io/badge/agents-Claude%20Code%20%2B%20Codex-417E68)](#usage)
 
 [Install](#install) · [Usage](#usage) · [How it works](#how-it-works) · [Settings](#settings) · [Limits](#limits)
 
 <p>
-  <a href="docs/images/menu-lid-closed-working.png"><img src="docs/images/menu-lid-closed-working.png" alt="The Claude Lid Closed menu under its cup icon. It reads: Keeping your Mac awake: Claude is working. Lid closed, system sleep disabled. DICOMergeForMac: working, 2 min. claudeLidClosed: working, 3 min. Then Automatic Mode (checked), Open Log, and Quit (restores normal sleep)." width="398"></a>
+  <a href="docs/images/menu-lid-closed-working.png"><img src="docs/images/menu-lid-closed-working.png" alt="Earlier Claude Lid Closed release: the cup menu reports lid closed, system sleep disabled, and two Claude Code sessions working." width="398"></a>
 </p>
 
-_The menu on a MacBook with its lid closed. Two Claude Code sessions are working, so the app has turned system sleep off. Once both are waiting for you, it turns sleep back on and the Mac goes to sleep._
+_Real screenshot from the earlier Claude-only release. The current menu also labels each session as Claude or Codex and includes a display dimming switch._
 
 ## Overview
 
-Closing a MacBook's lid puts it to sleep even while `caffeinate` is running, unless a display and power are connected. A long Claude Code task stops the moment you close the lid and walk away. Claude Lid Closed follows your sessions through Claude Code hooks and keeps the Mac awake only while Claude is actually working.
+Closing a MacBook's lid normally puts it to sleep even while `caffeinate` is running. Agent Lid Closed follows Claude Code and Codex lifecycle hooks, keeping the Mac awake while either tool has work to do.
 
-- **Close the lid mid-task.** While any session is generating, running tools or subagents, or has background tasks running, the app turns on `pmset disablesleep`, the one setting that keeps a closed MacBook running.
-- **Sleeps as soon as Claude needs you.** When a turn finishes, Claude asks a question or for permission, an API error stops it, or you press Esc, sleep is allowed again. If the lid is closed, the Mac goes to sleep.
-- **Claude Code's notification still goes out.** After a turn ends, the app waits for Claude Code's own "waiting for your input" notification before sleeping, so it can still reach your phone.
-- **Several sessions at once.** The Mac stays awake while any of them is working, and the menu lists what each one is doing.
-- **Never stuck awake.** Sleep is allowed again on battery at 15% or less, or when macOS reports the Mac is too hot. Quitting, logging out or a crash restores normal sleep, and sessions that exited or went quiet are dropped.
-- **Stays out of Claude's way.** The hook takes about 5 ms, prints nothing and always exits 0.
-- **Narrow root access.** A sudoers rule allows exactly `pmset -a disablesleep 0` and `pmset -a disablesleep 1`, and nothing else.
+- **Both tools, together.** Claude and Codex sessions share one sleep decision. The Mac stays awake while any tracked session is working, including tracked subagents.
+- **Screen at 0% with the lid closed.** The app turns the built-in backlight off while keeping a closed Mac awake, then restores the previous brightness when you open the lid.
+- **Sleep when turns finish.** Finished turns and input questions allow sleep once every session is waiting and its grace period has passed. Claude approval prompts also allow sleep; Codex approval requests keep the hold until the tool finishes or you interrupt.
+- **Claude notifications still go out.** Claude sessions wait for Claude Code's delayed input notification. Codex sessions use the normal 10 s grace period without that extra wait.
+- **See who is working.** Each menu row and terminal status line identifies the tool, project and activity.
+- **Battery and heat limits.** At 15% battery or less on battery power, or serious thermal pressure, the app releases its sleep hold. Quitting restores sleep and brightness; launchd restarts the app after a crash to recover its saved state.
+- **Small hooks, narrow access.** The helper writes local state and produces no stdout. Root access is limited to exactly `pmset -a disablesleep 0` and `pmset -a disablesleep 1`.
 
 ## Install
 
-Requirements: a MacBook with macOS 14 or later, [Claude Code](https://code.claude.com/docs/en/overview), and the Command Line Tools with Swift 6.2 or later (`xcode-select --install`; full Xcode isn't needed). Tested on macOS 26 on Apple silicon.
+Requirements: a MacBook with macOS 14 or later, [Claude Code](https://code.claude.com/docs/en/overview) and/or a current [Codex CLI](https://learn.chatgpt.com/docs/cli) with lifecycle hooks, and the Command Line Tools with Swift 6.2 or later (`xcode-select --install`; full Xcode isn't needed). Tested on macOS 26 on Apple silicon, with Codex CLI 0.163.0 hook configuration.
 
 ```sh
-git clone https://github.com/Jin-hiroo/claude-lid-closed.git
-cd claude-lid-closed && ./scripts/install.sh
+git clone https://github.com/Jin-hiroo/agent-lid-closed.git && cd agent-lid-closed && ./scripts/install.sh
 ```
 
-`install.sh` asks for your password once. It:
+The installer:
 
-1. Builds `ClaudeLidClosed.app` and installs it to `~/Applications`.
-2. Adds `/etc/sudoers.d/claude-lid-closed`, which lets your user run exactly `pmset -a disablesleep 0` and `pmset -a disablesleep 1` without a password.
-3. Adds hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`), after backing it up to `settings.json.bak`. Your other settings and hooks are left as they are.
-4. Starts the app now and at every login, via `~/Library/LaunchAgents/local.ClaudeLidClosed.plist`.
+1. Builds `AgentLidClosed.app` and installs it in `~/Applications`.
+2. Adds `/etc/sudoers.d/agent-lid-closed`, asking for your password if needed. Upgrades reuse the existing Claude Lid Closed rule when available.
+3. Adds Claude hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) and Codex hooks to `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`). Existing files are backed up to `.bak`; other settings and hooks are preserved.
+4. Starts the app now and at login via `~/Library/LaunchAgents/local.AgentLidClosed.plist`.
 
-It's safe to re-run, for example after `git pull`. To remove everything, run `./scripts/uninstall.sh`.
+You can use either agent on its own. Both hook configurations are installed, so switching tools later needs no reinstall.
+
+### Upgrading from Claude Lid Closed
+
+Run the installer from this checkout after updating. It stops the old app, preserves preferences and session state, and replaces the old login agent. The old state path and `ClaudeLidClosed.app/Contents/Helpers/claude-lid-hook` remain compatible aliases so Claude sessions already open can keep reporting events. Your checkout directory does not need renaming.
+
+The state directory may be a symlink to the existing Claude Lid Closed directory. This preserves the lock and files used by hooks that are already running.
+
+Re-running the installer is supported. Remove the app and both integrations with `./scripts/uninstall.sh`.
 
 ## Usage
 
-There's nothing to configure.
+1. Restart Claude Code and Codex sessions after installing so they load the hooks.
+2. **In Codex, open `/hooks` and review/trust the Agent Lid Closed command hooks.** Codex skips new or changed hooks until trusted. Hooks must also be enabled in Codex configuration and allowed by policy. See the [official hook setup guide](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+3. Give either tool a task. The menu bar icon becomes a cup while work is active.
+4. Close the lid. The Mac stays awake and the built-in display goes to 0% brightness.
+5. When every tracked session is waiting, the Mac can sleep: normally after 10 s for Codex and Claude permission prompts, or 70–90 s after Claude finishes or asks a question, allowing its delayed notification to go out.
 
-1. Restart any Claude Code sessions that were open before you installed, so they load the hooks.
-2. Give Claude a task. The menu bar icon turns into a cup.
-3. Close the lid and walk away.
-4. When Claude needs you, the Mac goes to sleep: about 10 s after a permission prompt, or 70 to 90 s after a turn ends or Claude asks a question, once Claude Code's notification has gone out.
+Open the lid to restore brightness. With an external display attached, macOS manages the built-in panel in clamshell mode; this app leaves brightness alone and does not force immediate system sleep.
 
-To see what happened, choose **Open Log** in the menu:
+Choose **Open Log** from the menu to view `~/Library/Logs/AgentLidClosed.log`.
 
-```
-2026-10-15T19:37:30+0900 Keeping Mac awake: Claude is working
-2026-10-15T19:57:30+0900 Sleep allowed: Claude is waiting for you
-2026-10-15T19:57:30+0900 Lid is closed: sleeping now
-```
-
-To see what it's tracking right now:
+To see the current sessions from a terminal:
 
 ```console
-$ ~/Applications/ClaudeLidClosed.app/Contents/Helpers/claude-lid-hook status
-DICOMergeForMac  working  (2 min)  b6b2cf46-59eb-4882-b8d5-fcc485fbbe24
-claudeLidClosed  working  (3 min)  d8046136-1249-4270-a5f4-46b4f400aba2
+$ ~/Applications/AgentLidClosed.app/Contents/Helpers/agent-lid-hook status
+Claude · DICOMergeForMac  working  (2 min)  b6b2cf46-59eb-4882-b8d5-fcc485fbbe24
+Codex · agent-lid-closed  working  (3 min)  codex:thread-id
 => keep the Mac awake
 ```
 
 ## How it works
 
-Closing the lid always puts a Mac to sleep, whatever apps like `caffeinate` ask for. The one switch that overrides this is the system-wide `SleepDisabled` setting (`pmset disablesleep`). Without a charger and an external display, it's the only way to keep a MacBook running with the lid shut.
+The app uses the system-wide `SleepDisabled` setting (`pmset disablesleep`) to prevent lid-closed sleep. Hooks report activity; they do not change power settings themselves.
 
+```text
+Claude Code ── hooks ──▶ agent-lid-hook                  ──┐
+Codex       ── hooks ──▶ agent-lid-hook --provider codex ──┤
+                                                         ▼
+                    sessions/<session key>.json ◀── menu bar app watches
+                                                         ├─ sleep disabled while any agent works
+                                                         └─ built-in brightness 0% with lid closed
 ```
-Claude Code ──hook event──▶ claude-lid-hook ──writes──▶ sessions/<session id>.json
-                                                                 │ watched
-menu bar app ◀───────────────────────────────────────────────────┘
-└─ sudo pmset -a disablesleep 1/0, then sleep now if the lid is closed
-```
 
-The session files are in `~/Library/Application Support/ClaudeLidClosed/sessions/`.
+Session files are in `~/Library/Application Support/AgentLidClosed/sessions/`. Codex IDs are namespaced separately from Claude IDs. Records written by the old Claude-only version still load.
 
-- `claude-lid-hook` (inside the app bundle) runs on each hook event: `UserPromptSubmit`, `PreToolUse`/`PostToolUse`, `Notification`, `Stop`, `SubagentStart`/`SubagentStop` and so on. It records each session's state in a small JSON file. It takes about 5 ms, prints nothing and always exits 0, so it can't get in Claude's way.
-- The app watches those files and decides:
-  - **Any session working → disable sleep.** That includes a running subagent, and a turn that ended with `background_tasks` still running (from the `Stop` payload).
-  - **All sessions waiting → enable sleep, and sleep now if the lid is closed.** It doesn't force sleep when an external display is attached (clamshell mode).
-- **Grace period.** When a turn finishes, Claude Code sends its own "waiting for your input" notification about 60 s later, which can reach your phone. The app waits for that notification, up to 90 s, and sleeps 10 s after it. Permission prompts are notified immediately, so those sleep after 10 s.
-- **Esc.** No hook fires when you interrupt Claude. A session that has been quiet for 20 s gets its transcript checked for `[Request interrupted by user]`.
+- **Activity.** `UserPromptSubmit` and tool hooks mark work active. `SubagentStart`/`SubagentStop` track child activity without overwriting the main session. Claude's `Stop` payload can also report background tasks.
+- **Waiting.** Codex `Stop`, `request_user_input` tool calls and `Interrupt` hooks mark a session as waiting. Its `PermissionRequest` keeps work active because an approval hook may allow a command without showing a prompt. Claude uses its question tools, notifications and stop events.
+- **Grace periods.** Codex waits `sleepGraceSeconds` after entering a waiting state. Claude waits for its input notification, up to `notifyTimeoutSeconds`, or uses the shorter grace after the notification arrives.
+- **Claude interruptions.** Claude does not emit an Esc hook. After 20 s without activity, its transcript is checked for `[Request interrupted by user]`. Codex uses its `Interrupt` hook; its transcript format is not parsed.
+- **Display.** Brightness is saved before setting it to 0. Once dimmed, it stays there during lid-closed sleep and is restored when the lid opens, checked twice a second. The saved value survives app restarts.
 
 ### Safety
 
-- **Battery.** On battery at 15% or less, sleep is allowed again, and the Mac sleeps if the lid is closed.
-- **Heat.** At macOS thermal state "serious" or worse, the same happens. A fanless MacBook Air in a bag gets hot.
-- **Quitting.** Quitting the app (menu, logout, `launchctl`, Ctrl-C) always re-enables sleep. If the app crashes, launchd restarts it, and the restarted app undoes the setting it left behind.
-- **Ended sessions.** A session whose Claude Code process has exited is dropped. So is a "working" session with no hook event for 30 minutes, or a background-only one with none for 60 minutes.
+- **Battery.** At or below the configured floor on battery power, normal sleep is restored.
+- **Heat.** macOS thermal state “serious” or “critical” releases the sleep hold.
+- **Exit and crash recovery.** Normal termination restores sleep and brightness. After a crash, launchd restarts the app so it can recover the hold marker and `dimmed-brightness` file.
+- **Visible restoration.** Brightness is restored to at least 10%, even if macOS reported 0 before dimming.
+- **Dead or stale sessions.** Sessions whose owning process exits are dropped. For app-server hosts, that process can outlive an individual conversation; cleanup then relies on `SessionEnd` or stale timeouts. Work without a hook event for 30 minutes is ignored; Claude background-only work expires after 60 minutes. PID start times distinguish reused process IDs.
 
 ## Menu
 
-The menu bar icon shows what the app is doing:
-
 | Icon | Meaning |
 | --- | --- |
-| Cup | Claude is working: sleep is off |
-| Hourglass | Every session is waiting: sleep comes back when the grace period ends |
+| Cup | At least one agent is working; sleep is disabled |
+| Hourglass | All sessions are waiting; the grace period is running |
 | Moon | Normal sleep |
 | Pause | Automatic Mode is off |
-| Warning triangle | Setup is needed, the battery is low or the Mac is too hot: normal sleep |
+| Warning triangle | Setup needed, low battery or thermal limit; normal sleep |
 
-The menu shows:
-- The current state, lid state and the actual `SleepDisabled` value.
-- Each session with what it's doing.
-- An **Automatic Mode** switch (off = never touch sleep).
-- **Open Log**, which opens `~/Library/Logs/ClaudeLidClosed.log`.
-- **Quit**.
-
-`claude-lid-hook status` prints the same session list from a terminal (see [Usage](#usage)).
+The menu lists each session's tool, project and activity, plus lid state, system sleep state and whether the display is off. **Automatic Mode** controls sleep management. **Turn Display Off When Lid Closed** controls dimming and is on by default. **Open Log** and **Quit** are also available.
 
 ## Settings
 
-Change these with `defaults write local.ClaudeLidClosed <key> <number>`. They take effect within 5 s.
+Use `defaults write local.AgentLidClosed <key> <number>`. Timing and safety settings take effect within 5 s. Existing preferences from `local.ClaudeLidClosed` are copied once on upgrade unless the new domain already has a value.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `notifyTimeoutSeconds` | 90 | Longest wait for Claude Code's "waiting for input" notification before sleeping. Set it to 0 to skip waiting for that notification (sleep then follows after `sleepGraceSeconds`). |
-| `sleepGraceSeconds` | 10 | Delay after Claude starts waiting (and has notified) before sleeping |
-| `batteryFloorPercent` | 15 | On battery at or below this, allow sleep |
-| `workingStaleMinutes` | 30 | A "working" session with no events for this long is ignored |
-| `backgroundStaleMinutes` | 60 | Background tasks alone keep the Mac awake this long after Claude's last event |
+| `notifyTimeoutSeconds` | 90 | Claude only: longest wait for the delayed input notification; 0 skips that wait |
+| `sleepGraceSeconds` | 10 | Delay after a waiting notification, or after Codex starts waiting |
+| `batteryFloorPercent` | 15 | At or below this percentage on battery power, allow sleep |
+| `workingStaleMinutes` | 30 | Ignore working sessions and subagent markers after this long without events |
+| `backgroundStaleMinutes` | 60 | Ignore Claude background-only work after this long without events |
+
+Use the menu to toggle Automatic Mode and display dimming.
 
 ## Limits
 
-- **Approving a permission prompt, then immediately closing the lid.** No hook fires when you approve, so until that tool finishes the session still counts as waiting, and the Mac can sleep during it. This doesn't happen in bypass-permissions mode.
-- **Scheduled wakeups** (`/loop`, cron-style tasks) don't keep the Mac awake. When Claude ends a turn to wait for a timer, the Mac sleeps.
-- **Manual sleep.** While the app holds sleep off, macOS may ignore manual sleep (Apple menu → Sleep). Turn off Automatic Mode or quit the app first.
-- **Hosts other than the CLI.** Claude Code hosts that don't load `~/.claude/settings.json` (some SDK-based apps) won't send hooks. Those sessions are invisible to the app.
+- **Codex hook trust.** Installing the file does not trust the hooks. Review them through `/hooks` before relying on this app. Older Codex versions without these lifecycle events are unsupported.
+- **Approval prompts.** Codex has no approval-accepted hook, and another hook can auto-allow a command. The app therefore keeps Codex awake through approval requests until tool completion, turn completion or interruption (subject to stale timeouts). For Claude, approving and immediately closing the lid can still allow sleep until that tool completes; bypassing permission prompts avoids that gap.
+- **Codex background work.** Detached commands that outlive a completed turn are not included in Codex's `Stop` payload. They are not independently tracked. Claude background tasks and lifecycle-reported subagents are tracked.
+- **Scheduled wakeups.** Timers and scheduled future turns do not keep the Mac awake between turns.
+- **Hooks that continue a turn.** Another `Stop` or `SubagentStop` hook can request more work after this app has recorded completion. Until the next activity hook, the session may count as waiting. Increase the grace period or turn off Automatic Mode for long continuation-only workflows.
+- **Manual sleep.** macOS may ignore manual sleep while the hold is active. Turn off Automatic Mode or quit first.
+- **Private brightness API.** Apple silicon brightness control uses `DisplayServices`. If a future macOS removes that API, dimming is skipped and a failure is logged.
+- **Other hosts and remote work.** Only hosts that load and run the configured local hooks are visible. Cloud sessions and hosts that skip hooks are not tracked; a running process alone does not imply an active turn.
 
 ## Development
 
 ```sh
-swift build                    # debug build
-./scripts/test-hook.sh         # hook/state checks against a temp directory
-./scripts/build-app.sh         # build/ClaudeLidClosed.app
+swift build                    # debug build, when SwiftPM is available
+./scripts/test-hook.sh         # Claude + Codex hook/state regression checks
+python3 scripts/test-install.py # hook merging and upgrade compatibility checks
+./scripts/build-app.sh         # build/AgentLidClosed.app
 
-# Run the app without touching pmset, pretending the lid is closed, with short timings:
-CLAUDE_LID_DRY_RUN=1 CLAUDE_LID_FAKE_LID=closed CLAUDE_LID_STATE_DIR=/tmp/lid \
-  build/ClaudeLidClosed.app/Contents/MacOS/ClaudeLidClosed \
+# Quit the installed app before running this check:
+python3 scripts/test-display.py # both tools: dim, sleep, restore; no real power changes
+
+# Run manually in dry-run mode:
+AGENT_LID_DRY_RUN=1 AGENT_LID_FAKE_LID=closed AGENT_LID_STATE_DIR=/tmp/agent-lid \
+  build/AgentLidClosed.app/Contents/MacOS/AgentLidClosed \
   -notifyTimeoutSeconds 6 -sleepGraceSeconds 2
 ```
 
+The scripts fall back to direct `swiftc` builds if SwiftPM cannot start. With a mismatched local SDK, set `AGENT_LID_SDK` to a compatible SDK path for that fallback. For example, this machine's Swift 6.3 compiler works with `AGENT_LID_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`.
+
+In a dry run, power and brightness changes are logged. Create `/tmp/agent-lid/lid-open` to simulate opening the lid. The old `CLAUDE_LID_STATE_DIR`, `CLAUDE_LID_DRY_RUN` and `CLAUDE_LID_FAKE_LID` variables remain accepted.
+
 ## License
 
-[MIT](LICENSE)
-
-Claude Lid Closed is an independent project, not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic.
+[MIT](LICENSE). Agent Lid Closed was previously named Claude Lid Closed. It is an independent project, not affiliated with or endorsed by Anthropic or OpenAI. Claude and Claude Code are trademarks of Anthropic; Codex is an OpenAI product.

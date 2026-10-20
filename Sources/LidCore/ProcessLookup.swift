@@ -20,7 +20,7 @@ public enum ProcessLookup {
         return abs(current.startTime - startTime) < 1
     }
 
-    /// The Claude Code process that ran this hook: the nearest ancestor that isn't a shell.
+    /// The agent process that ran this hook: the nearest ancestor that isn't a shell.
     public static func hookOwner() -> ProcessIdentity? {
         var pid = getppid()
         for _ in 0..<8 {

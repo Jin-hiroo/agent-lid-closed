@@ -1,30 +1,34 @@
 import Foundation
 
-/// What the main Claude agent of a session is doing, as last reported by a hook.
+/// What a session's main agent is doing, as last reported by a hook.
 public enum AgentState: String, Codable, Sendable {
     /// Generating a reply or running tools.
     case working
-    /// Waiting for you: the turn finished, or Claude asked a question or for permission.
+    /// Waiting for you: the turn finished, or the agent needs input or permission.
     case waiting
     /// The turn ended, but background tasks (shells, subagents…) are still running.
     case background
 }
 
-/// One Claude Code session, stored as `sessions/<session id>.json`.
+/// One agent session, stored as `sessions/<session key>.json`.
 public struct SessionRecord: Codable, Sendable, Equatable {
     public var sessionID: String
     public var state: AgentState
-    /// Why Claude is in `state`, shown in the menu ("finished", "question", …).
+    /// Why the agent is in `state`, shown in the menu ("finished", "question", …).
     public var reason: String
-    /// Claude Code has already raised its own "needs your input" notification for this wait.
+    /// Input notification already received, or this provider needs no delayed notification.
     public var notified: Bool
     public var stateSince: Double
     public var updatedAt: Double
-    /// The Claude Code process, so the app can drop sessions whose process is gone. 0 if unknown.
+    /// Owning agent process, used to drop exited sessions. 0 if unknown.
     public var pid: Int32
     public var pidStart: Double
     public var cwd: String?
     public var transcriptPath: String?
+    /// Missing in records written before Codex support was added.
+    public var provider: AgentProvider?
+
+    public var client: AgentProvider { provider ?? .claude }
 }
 
 /// Session files in one directory. Running subagents are empty marker files named

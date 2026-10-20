@@ -3,7 +3,7 @@ import LidCore
 import SwiftUI
 
 @main
-struct ClaudeLidClosedApp: App {
+struct AgentLidClosedApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -22,7 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Two copies would fight over the same system setting.
-        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? Paths.bundleID)
+        let others = [Paths.bundleID, Paths.legacyBundleID].flatMap {
+            NSRunningApplication.runningApplications(withBundleIdentifier: $0)
+        }
             .filter { $0.processIdentifier != getpid() }
         guard others.isEmpty else {
             NSApp.terminate(nil)
@@ -52,15 +54,17 @@ struct MenuContent: View {
         Text(controller.detail)
         Divider()
         if controller.evaluation.sessions.isEmpty {
-            Text("No Claude Code sessions")
+            Text("No agent sessions")
         } else {
             ForEach(controller.evaluation.sessions) { session in
-                Text("\(session.project): \(session.label) · \(Self.age(session.since))")
+                Text("\(session.provider.name) · \(session.project): \(session.label) · \(Self.age(session.since))")
             }
         }
         Divider()
         Toggle("Automatic Mode", isOn: Binding(get: { controller.autoEnabled },
                                                set: { controller.setAutoEnabled($0) }))
+        Toggle("Turn Display Off When Lid Closed", isOn: Binding(get: { controller.dimEnabled },
+                                                                 set: { controller.setDimEnabled($0) }))
         Button("Open Log") { NSWorkspace.shared.open(Paths.logFile) }
         Divider()
         Button("Quit (restores normal sleep)") { NSApp.terminate(nil) }
