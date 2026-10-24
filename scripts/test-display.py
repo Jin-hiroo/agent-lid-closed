@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dry-run real app transitions for each provider. Quit the installed app first."""
+"""Dry-run real app transitions for each provider, without touching the installed app."""
 import json
 import os
 import pathlib

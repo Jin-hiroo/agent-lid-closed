@@ -10,10 +10,12 @@ import LidCore
 /// Closing the lid always sleeps the Mac, whatever sleep assertions apps hold (that's all
 /// `caffeinate` does). The only switch that overrides it is the system-wide SleepDisabled
 /// setting, `pmset -a disablesleep 1`, which needs root: install.sh adds a sudoers rule
-/// allowing exactly `pmset -a disablesleep 0|1` without a password.
+/// allowing `pmset -a disablesleep 0|1` without a password. Scheduled wakes use a
+/// separate root-owned helper, never unrestricted pmset arguments.
 enum Power {
     static let sudoersFile = "/etc/sudoers.d/agent-lid-closed"
     static let legacySudoersFile = "/etc/sudoers.d/claude-lid-closed"
+    static let wakeHelper = "/Library/PrivilegedHelperTools/local.AgentLidClosed.wake"
 
     /// `AGENT_LID_DRY_RUN=1` logs pmset and brightness calls instead of running them;
     /// `AGENT_LID_FAKE_LID=closed` pretends the lid is closed until a file named `lid-open`
@@ -38,6 +40,23 @@ enum Power {
     static var isSetUp: Bool {
         dryRun || FileManager.default.fileExists(atPath: sudoersFile)
             || FileManager.default.fileExists(atPath: legacySudoersFile)
+    }
+
+    static var wakeIsSetUp: Bool {
+        dryRun || FileManager.default.isExecutableFile(atPath: wakeHelper)
+    }
+
+    /// Called only when the requested alarm changes. Keeping this short operation synchronous
+    /// also makes quit-time cancellation run strictly after any in-flight schedule operation.
+    @MainActor
+    static func setScheduledWake(_ epoch: Double?) -> String? {
+        let args = epoch.map { ["set", String(Int64($0))] } ?? ["clear"]
+        if dryRun {
+            Log.write("[dry run] wake helper \(args.joined(separator: " "))")
+            return nil
+        }
+        let (status, output) = run("/usr/bin/sudo", ["-n", wakeHelper] + args)
+        return status == 0 ? nil : "Wake scheduler failed (\(status)): \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
     }
 
     /// Turns lid-closed (and all other) sleep off or back on. Returns an error message on failure.
@@ -120,6 +139,12 @@ enum Power {
     }
 
     static var battery: Battery? {
+        if dryRun {
+            if let value = environment("FAKE_BATTERY_PERCENT").flatMap(Int.init) {
+                return Battery(percent: value, onBattery: true)
+            }
+            return Battery(percent: 100, onBattery: false)
+        }
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
         for source in sources {
@@ -131,6 +156,14 @@ enum Power {
             return Battery(percent: current * 100 / max, onBattery: onBattery)
         }
         return nil
+    }
+
+    static var thermalState: ProcessInfo.ThermalState {
+        if dryRun {
+            return FileManager.default.fileExists(atPath: Paths.stateDir.appendingPathComponent("thermal-serious").path)
+                ? .serious : .nominal
+        }
+        return ProcessInfo.processInfo.thermalState
     }
 
     @MainActor

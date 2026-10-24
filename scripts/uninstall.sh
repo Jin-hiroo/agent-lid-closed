@@ -16,7 +16,10 @@ for settings in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "${CODEX_HOM
 done
 
 sudo /usr/bin/pmset -a disablesleep 0
+WAKE_HELPER=/Library/PrivilegedHelperTools/local.AgentLidClosed.wake
+if [ -x "$WAKE_HELPER" ]; then sudo "$WAKE_HELPER" clear; fi
 sudo rm -f /etc/sudoers.d/agent-lid-closed /etc/sudoers.d/claude-lid-closed
+sudo rm -f "$WAKE_HELPER" /var/run/local.AgentLidClosed.wake.lock
 for name in AgentLidClosed ClaudeLidClosed; do
     rm -rf "$HOME/Applications/$name.app" "$HOME/Library/Application Support/$name"
 done

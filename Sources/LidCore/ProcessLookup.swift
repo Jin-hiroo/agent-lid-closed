@@ -20,6 +20,18 @@ public enum ProcessLookup {
         return abs(current.startTime - startTime) < 1
     }
 
+    /// Distinguishes a T3-owned provider from a terminal resuming the same native
+    /// conversation ID. A separate terminal's live hooks must remain independent.
+    public static func isDescendant(_ pid: Int32, of ancestor: Int32) -> Bool {
+        var current = pid
+        for _ in 0..<64 {
+            if current == ancestor { return true }
+            guard current > 1, let info = kinfo(current) else { return false }
+            current = info.kp_eproc.e_ppid
+        }
+        return false
+    }
+
     /// The agent process that ran this hook: the nearest ancestor that isn't a shell.
     public static func hookOwner() -> ProcessIdentity? {
         var pid = getppid()

@@ -37,7 +37,26 @@ CODEX_EVENTS = dict.fromkeys([
 ])
 
 
+def unwrap_statusline(settings):
+    """Recover the exact previous object from our wrapper, including display options."""
+    status = settings.get("statusLine")
+    if not isinstance(status, dict) or not isinstance(status.get("command"), str):
+        return
+    try:
+        args = shlex.split(status["command"])
+        if len(args) < 2 or os.path.basename(args[0]) != "agent-lid-hook" or args[1] != "statusline":
+            return
+        if len(args) == 2:
+            del settings["statusLine"]
+        elif len(args) == 4 and args[2] == "--original-statusline":
+            settings["statusLine"] = json.loads(args[3])
+    except (ValueError, TypeError):
+        # A manually edited command is the user's to keep.
+        return
+
+
 def strip(settings):
+    unwrap_statusline(settings)
     hooks = settings.get("hooks") or {}
     for event in list(hooks):
         kept = []
@@ -66,10 +85,24 @@ def validate(settings):
             for handler in group["hooks"]:
                 if not isinstance(handler, dict) or not isinstance(handler.get("command", ""), str):
                     raise ValueError("Expected hook handler objects with string commands")
+    status = settings.get("statusLine")
+    if status is not None and (not isinstance(status, dict) or status.get("type") != "command" or
+                               not isinstance(status.get("command"), str)):
+        raise ValueError("Expected a command statusLine; existing settings were preserved")
 
 
 def install(settings, command, provider="claude"):
     strip(settings)
+    if provider == "claude":
+        original = settings.get("statusLine")
+        if original is not None and (not isinstance(original, dict) or
+                                     original.get("type") != "command" or
+                                     not isinstance(original.get("command"), str)):
+            raise ValueError("Cannot wrap an unsupported Claude statusLine; existing settings were preserved")
+        wrapper = command + " statusline"
+        if "statusLine" in settings:
+            wrapper += " --original-statusline " + shlex.quote(json.dumps(original, ensure_ascii=False))
+        settings["statusLine"] = {**(original or {}), "type": "command", "command": wrapper}
     hooks = settings.setdefault("hooks", {})
     events = CODEX_EVENTS if provider == "codex" else CLAUDE_EVENTS
     for event, matcher in events.items():

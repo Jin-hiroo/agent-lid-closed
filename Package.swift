@@ -11,5 +11,6 @@ let package = Package(
         .executableTarget(name: "AgentLidClosed", dependencies: ["LidCore"]),
         // Called by Claude Code and Codex hooks; records each session's activity.
         .executableTarget(name: "agent-lid-hook", dependencies: ["LidCore"]),
+        .executableTarget(name: "agent-lid-wake", dependencies: ["LidCore"]),
     ]
 )
