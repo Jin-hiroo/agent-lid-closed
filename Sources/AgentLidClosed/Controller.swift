@@ -26,6 +26,13 @@ final class Controller {
     private(set) var lastError: String?
     private(set) var autoEnabled: Bool
     private(set) var dimEnabled: Bool
+    private(set) var wakeEnabled: Bool
+    private(set) var nextQuotaReset: Date?
+    private(set) var nextQuotaProvider: AgentProvider?
+    private(set) var quotaHoldUntil: Date?
+    private(set) var quotaHoldingProviders: [AgentProvider] = []
+    private(set) var wakeError: String?
+    private(set) var t3Error: String?
     /// This app has turned the built-in display's backlight off.
     private(set) var displayDimmed = false
 
@@ -45,17 +52,24 @@ final class Controller {
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var signalSources: [DispatchSourceSignal] = []
     @ObservationIgnored private let interrupts = InterruptCache()
+    @ObservationIgnored private let codexQuota = CodexQuotaMonitor()
+    @ObservationIgnored private var t3Cache = T3Monitor.Cache()
     @ObservationIgnored private var loggedSummary = ""
     /// Brightness to put back when the lid opens.
     @ObservationIgnored private var savedBrightness: Float?
     @ObservationIgnored private var lidWatcher: Task<Void, Never>?
     @ObservationIgnored private var loggedDisplayError = ""
+    @ObservationIgnored private var scheduledWakeAt: Double?
+    @ObservationIgnored private var lastT3WakeAt: Double?
+    @ObservationIgnored private var wakeSynchronized = false
+    @ObservationIgnored private var wakeRetryAt = Date.distantPast
 
     init() {
         Paths.migratePreferences(to: .standard)
-        UserDefaults.standard.register(defaults: ["autoEnabled": true, "dimDisplay": true])
+        UserDefaults.standard.register(defaults: ["autoEnabled": true, "dimDisplay": true, "wakeForQuotaReset": true])
         autoEnabled = UserDefaults.standard.bool(forKey: "autoEnabled")
         dimEnabled = UserDefaults.standard.bool(forKey: "dimDisplay")
+        wakeEnabled = UserDefaults.standard.bool(forKey: "wakeForQuotaReset")
     }
 
     func start() {
@@ -102,6 +116,7 @@ final class Controller {
     func shutdown() {
         guard started else { return }
         ticker?.cancel()
+        if Power.wakeIsSetUp, let error = Power.setScheduledWake(nil) { Log.write(error) }
         if displayDimmed { restoreDisplay() }
         guard holding else { return }
         if Power.allowSleepNow() {
@@ -127,6 +142,13 @@ final class Controller {
         updateDisplayDimming()
     }
 
+    func setWakeEnabled(_ enabled: Bool) {
+        wakeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "wakeForQuotaReset")
+        Log.write("Wake for usage resets \(enabled ? "on" : "off")")
+        evaluate()
+    }
+
     func evaluate() {
         if watcher == nil {
             try? FileManager.default.createDirectory(at: Paths.sessionsDir, withIntermediateDirectories: true)
@@ -137,7 +159,11 @@ final class Controller {
         }
         let now = Date().timeIntervalSince1970
         settings = LidSettings.load(from: .standard)
-        let result = Evaluator.evaluate(store.loadAll(), now: now, settings: settings,
+        codexQuota.refresh(store: store, now: now, isAlive: ProcessLookup.isAlive)
+        let t3 = t3Cache.resolve(T3Monitor.read(now: now), now: now)
+        t3Error = t3.error
+        let contents = t3.merging(store.loadAll())
+        let result = Evaluator.evaluate(contents, now: now, settings: settings,
                                         isAlive: ProcessLookup.isAlive,
                                         isInterrupted: interrupts.endsWithInterrupt)
         for id in result.deadSessionIDs {
@@ -149,13 +175,33 @@ final class Controller {
         lidClosed = Power.lidClosed
         sleepDisabled = Power.sleepDisabled
         blocker = currentBlocker()
+        let plan = wakeEnabled && blocker == nil
+            ? QuotaWakePlan.evaluate(contents.records, now: now, isAlive: ProcessLookup.isAlive)
+            : QuotaWakePlan.evaluate([], now: now, isAlive: ProcessLookup.isAlive)
+        if t3.error == nil {
+            lastT3WakeAt = QuotaWakePlan.evaluate(t3.records, now: now, isAlive: ProcessLookup.isAlive).nextWakeAt
+        }
+        nextQuotaReset = plan.nextResetAt.map(Date.init(timeIntervalSince1970:))
+        nextQuotaProvider = plan.nextResetProvider
+        quotaHoldUntil = plan.holdUntil.map(Date.init(timeIntervalSince1970:))
+        quotaHoldingProviders = plan.holdingProviders
+        // Failed telemetry cannot cancel a known future alarm. Explicit pause,
+        // disable and safety blockers still cancel it immediately.
+        let desiredWake: Double?
+        if t3.error != nil, wakeEnabled, blocker == nil,
+           let lastT3WakeAt, lastT3WakeAt > now + 5 {
+            desiredWake = min(plan.nextWakeAt ?? lastT3WakeAt, lastT3WakeAt)
+        } else {
+            desiredWake = plan.nextWakeAt
+        }
+        synchronizeWake(desiredWake)
         logSessionsIfChanged()
         updateDisplayDimming()
 
         guard !transitioning, Date() >= retryAt else { return }
-        if result.keepAwake && blocker == nil {
+        if (result.keepAwake || quotaHoldUntil != nil) && blocker == nil {
             pendingSleepAt = nil
-            if !holding { transition(hold: true, why: "an agent is working") }
+            if !holding { transition(hold: true, why: quotaHoldUntil != nil ? "usage resets shortly" : "an agent is working") }
         } else if holding {
             if let blocker {
                 pendingSleepAt = nil
@@ -177,17 +223,28 @@ final class Controller {
 
     var headline: String {
         if let blocker { return Self.describe(blocker) }
+        if quotaHoldUntil != nil {
+            let providers = quotaHoldingProviders.map(\.name).joined(separator: " and ")
+            return "Keeping your Mac awake for \(providers)'s usage reset"
+        }
         if holding, let pendingSleepAt {
             let seconds = max(0, Int(pendingSleepAt.timeIntervalSinceNow.rounded(.up)))
             return "Agents are waiting: Mac can sleep in \(seconds) s"
         }
         if holding || evaluation.keepAwake { return "Keeping your Mac awake: an agent is working" }
+        if nextQuotaReset != nil { return "Waiting for an agent's usage reset: normal sleep" }
         return evaluation.sessions.isEmpty ? "No agent sessions: normal sleep" : "All agents are waiting for you: normal sleep"
     }
 
     var detail: String {
         var text = "Lid \(lidClosed ? "closed" : "open") · system sleep \(sleepDisabled ? "disabled" : "enabled")"
         if displayDimmed { text += " · display off" }
+        if let nextQuotaReset {
+            text += "\n\(nextQuotaProvider?.name ?? "Agent") usage resets \(nextQuotaReset.formatted(date: .abbreviated, time: .shortened))"
+        }
+        if wakeEnabled && !Power.wakeIsSetUp { text += "\nWake setup needed: run scripts/install.sh" }
+        if let wakeError { text += "\n\(wakeError)" }
+        if let t3Error { text += "\n\(t3Error)" }
         if let lastError { text += "\n\(lastError)" }
         return text
     }
@@ -203,6 +260,26 @@ final class Controller {
     }
 
     // MARK: Private
+
+    private func synchronizeWake(_ desired: Double?) {
+        guard Power.wakeIsSetUp, Date() >= wakeRetryAt,
+              !wakeSynchronized || desired != scheduledWakeAt else { return }
+        if let error = Power.setScheduledWake(desired) {
+            if error != wakeError { Log.write(error) }
+            wakeError = error
+            wakeRetryAt = Date().addingTimeInterval(30)
+            return
+        }
+        wakeError = nil
+        wakeRetryAt = .distantPast
+        scheduledWakeAt = desired
+        wakeSynchronized = true
+        if let desired {
+            Log.write("Wake scheduled for usage reset: \(Date(timeIntervalSince1970: desired))")
+        } else {
+            Log.write("Usage wake cleared")
+        }
+    }
 
     /// Re-evaluates right when the grace period ends, rather than on the next 5 s tick.
     private func evaluate(at date: Date) {
@@ -247,7 +324,12 @@ final class Controller {
             }
             try? FileManager.default.removeItem(at: Paths.holdMarker)
             Log.write("Sleep allowed: \(why)")
-            if Power.lidClosed && !Power.hasExternalDisplay {
+            // Hooks or a quota warm-up can arrive while pmset runs. Refresh before an
+            // explicit sleep so we don't put a newly active session back to sleep.
+            evaluate()
+            let maySleep = blocker != nil || (!evaluation.keepAwake && quotaHoldUntil == nil
+                && Date().timeIntervalSince1970 >= evaluation.sleepAllowedAt)
+            if maySleep && Power.lidClosed && !Power.hasExternalDisplay {
                 Log.write("Lid is closed: sleeping now")
                 Power.sleepNow()
             }
@@ -317,7 +399,7 @@ final class Controller {
         if let battery = Power.battery, battery.onBattery, battery.percent <= settings.batteryFloor {
             return .batteryLow(battery.percent)
         }
-        let thermal = ProcessInfo.processInfo.thermalState
+        let thermal = Power.thermalState
         if thermal == .serious || thermal == .critical { return .tooHot }
         return nil
     }

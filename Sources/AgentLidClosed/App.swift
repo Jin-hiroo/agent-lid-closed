@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSRunningApplication.runningApplications(withBundleIdentifier: $0)
         }
             .filter { $0.processIdentifier != getpid() }
-        guard others.isEmpty else {
+        guard Power.dryRun || others.isEmpty else {
             NSApp.terminate(nil)
             return
         }
@@ -65,6 +65,8 @@ struct MenuContent: View {
                                                set: { controller.setAutoEnabled($0) }))
         Toggle("Turn Display Off When Lid Closed", isOn: Binding(get: { controller.dimEnabled },
                                                                  set: { controller.setDimEnabled($0) }))
+        Toggle("Wake for Usage Resets", isOn: Binding(get: { controller.wakeEnabled },
+                                                    set: { controller.setWakeEnabled($0) }))
         Button("Open Log") { NSWorkspace.shared.open(Paths.logFile) }
         Divider()
         Button("Quit (restores normal sleep)") { NSApp.terminate(nil) }

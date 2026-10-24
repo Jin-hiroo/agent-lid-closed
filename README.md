@@ -19,13 +19,14 @@ _Real screenshot from the earlier Claude-only release. The current menu also lab
 
 Closing a MacBook's lid normally puts it to sleep even while `caffeinate` is running. Agent Lid Closed follows Claude Code and Codex lifecycle hooks, keeping the Mac awake while either tool has work to do.
 
-- **Both tools, together.** Claude and Codex sessions share one sleep decision. The Mac stays awake while any tracked session is working, including tracked subagents.
+- **Both tools, together.** Claude and Codex sessions share one sleep decision. The Mac stays awake while any tracked session is working, including tracked subagents. T3 Code conversations are tracked directly, including hosts whose provider hooks are unavailable.
 - **Screen at 0% with the lid closed.** The app turns the built-in backlight off while keeping a closed Mac awake, then restores the previous brightness when you open the lid.
 - **Sleep when turns finish.** Finished turns and input questions allow sleep once every session is waiting and its grace period has passed. Claude approval prompts also allow sleep; Codex approval requests keep the hold until the tool finishes or you interrupt.
+- **Wake before either tool's usage resets.** When Claude or Codex hits a known subscription limit, schedule a wake two minutes before the earliest reset. Both tools share the same sleep decision and wake alarm.
 - **Claude notifications still go out.** Claude sessions wait for Claude Code's delayed input notification. Codex sessions use the normal 10 s grace period without that extra wait.
 - **See who is working.** Each menu row and terminal status line identifies the tool, project and activity.
 - **Battery and heat limits.** At 15% battery or less on battery power, or serious thermal pressure, the app releases its sleep hold. Quitting restores sleep and brightness; launchd restarts the app after a crash to recover its saved state.
-- **Small hooks, narrow access.** The helper writes local state and produces no stdout. Root access is limited to exactly `pmset -a disablesleep 0` and `pmset -a disablesleep 1`.
+- **Small hooks, narrow access.** Event hooks write local state and produce no stdout. Root access permits the two `pmset disablesleep` settings and a root-owned helper that can only manage this app's wake alarms within the next seven days.
 
 ## Install
 
@@ -38,9 +39,10 @@ git clone https://github.com/Jin-hiroo/agent-lid-closed.git && cd agent-lid-clos
 The installer:
 
 1. Builds `AgentLidClosed.app` and installs it in `~/Applications`.
-2. Adds `/etc/sudoers.d/agent-lid-closed`, asking for your password if needed. Upgrades reuse the existing Claude Lid Closed rule when available.
-3. Adds Claude hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) and Codex hooks to `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`). Existing files are backed up to `.bak`; other settings and hooks are preserved.
-4. Starts the app now and at login via `~/Library/LaunchAgents/local.AgentLidClosed.plist`.
+2. Installs the wake helper at `/Library/PrivilegedHelperTools/local.AgentLidClosed.wake` and adds `/etc/sudoers.d/agent-lid-closed`, asking for your administrator password. The helper is root-owned and cannot be replaced by the app.
+3. Adds Claude hooks and wraps its status-line command in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`), and adds Codex hooks to `~/.codex/hooks.json` (or `$CODEX_HOME/hooks.json`). Existing files are backed up to `.bak`; other settings and hooks are preserved. Your previous status-line command receives the same input and its output and display options are preserved. Uninstall restores it.
+4. Enables T3 Code's native `autoResumeLimitedThreads` setting if `~/.t3/userdata/settings.json` exists. T3 reloads the setting while running; it applies to eligible blocked conversations, including existing ones. Other T3 preferences are preserved.
+5. Starts the app now and at login via `~/Library/LaunchAgents/local.AgentLidClosed.plist`.
 
 You can use either agent on its own. Both hook configurations are installed, so switching tools later needs no reinstall.
 
@@ -54,7 +56,7 @@ Re-running the installer is supported. Remove the app and both integrations with
 
 ## Usage
 
-1. Restart Claude Code and Codex sessions after installing so they load the hooks.
+1. For terminal sessions, restart Claude Code and Codex after installing so they load the hooks. T3 Code conversations are detected directly without restarting or trusting Codex hooks.
 2. **In Codex, open `/hooks` and review/trust the Agent Lid Closed command hooks.** Codex skips new or changed hooks until trusted. Hooks must also be enabled in Codex configuration and allowed by policy. See the [official hook setup guide](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
 3. Give either tool a task. The menu bar icon becomes a cup while work is active.
 4. Close the lid. The Mac stays awake and the built-in display goes to 0% brightness.
@@ -73,9 +75,29 @@ Codex · agent-lid-closed  working  (3 min)  codex:thread-id
 => keep the Mac awake
 ```
 
+### Wake when Claude or Codex limits reset
+
+Leave the tracked sessions open, with hooks enabled. **Wake for Usage Resets** is enabled in this app's menu by default; Automatic Mode must also be on. The Mac stays awake while either provider is working. It can sleep when both are waiting, then wakes two minutes before the earliest known reset. If the first session exits or cancels its wait, the other session's wake is retained.
+
+**Claude Code:** use **2.1.234 or later** with a Pro or Max subscription. The status-line wrapper records Claude's documented `rate_limits.five_hour` and `seven_day` percentages and reset timestamps locally. A `StopFailure` hook with `error: "rate_limit"` arms the wait. Keep **Continue automatically at usage limit** enabled in Claude's `/config` so the existing session continues after the reset.
+
+**T3 Code (Claude and Codex):** leave T3 running. The app reads T3's local orchestration metadata from `~/.t3/userdata/statev2.sqlite` through a read-only SQLite connection. It follows running turns, reported background tasks, permission/input and secret requests, and the exact failed run and reset that T3 has armed for recovery. T3's native worker continues the same conversation at the reset, preserving context and permission mode and preventing duplicate continuations. A newer turn, cancellation, archive, settlement, recovery opt-out, or quitting T3 cancels the corresponding wake. Native state takes priority over duplicate hooks from T3-owned provider processes. A terminal resuming the same conversation remains independently tracked. A later T3 snooze delays its wake until the snoozed recovery time. No account tokens or conversation text are collected.
+
+The installer enables native continuation for T3. To enable it separately, run `python3 scripts/configure-t3.py`. Disable automatic continuation in T3's usage-limit recovery settings; this native preference persists after uninstalling Agent Lid Closed. The adapter targets the installed T3 orchestration-v2 schema; an unsupported schema reports an error and falls back to hooks. For a custom T3 userdata location, set `AGENT_LID_T3_DIR` in the app's launch environment.
+
+**Codex outside T3:** the quota adapter targets the **0.163.0** local event format. Codex's [hooks](https://learn.chatgpt.com/docs/hooks#common-input-fields) supply a transcript path but no quota-failure event. The adapter reads only typed `event_msg` metadata from that file: `token_count.rate_limits.primary/secondary` windows and quota error codes. It doesn't read credentials or store conversation text. It saves its byte position so restarting this app can't replay a previously cancelled failure. The transcript format is explicitly unstable; missing or unknown data does not arm a wake. Hosts that don't provide a local JSONL transcript aren't covered by this adapter.
+
+A wake is armed only for a live session with a confirmed quota failure and an exhausted window with a known reset. If both windows for that provider are exhausted, the later reset is used. The menu identifies which provider resets next. T3 recoveries support resets up to seven days away; terminal adapters retain their 24-hour wait horizon. The app holds the Mac awake from two minutes before the reset until activity resumes, or at most five minutes after the reset if it doesn't. Any other working Claude or Codex session keeps the normal hold throughout.
+
+The app never sends a continuation prompt or launches a duplicate agent. **T3 Code handles Claude/Codex continuation through its native recovery worker.** Outside T3, Codex continuation depends on its host; waking the Mac alone doesn't start another Codex turn. Terminal Claude can use its native automatic continuation. Waking early matters because [Claude requires Enter after a long sleep that ends after the reset](https://code.claude.com/docs/en/interactive-mode#wait-for-a-usage-limit-to-reset).
+
+Pause, disabling the wake toggle, session exit, continuation, reported cancellation, battery/thermal limits, and quitting clear the app's alarm. Other applications' wake schedules are preserved. Claude doesn't emit a cancellation hook when you press Esc during its quota countdown, so one previously scheduled wake may still occur; its hold remains bounded and Claude won't be prompted by this app.
+
+**Closed-lid wake is best effort and needs testing on your Mac, preferably plugged in.** macOS can defer a scheduled wake or wake only briefly. Missing reset data, resets beyond the supported horizon (seven days for T3, 24 hours for terminal adapters), and unsupported host telemetry don't schedule a wake. Claude also needs its status line and native wait, which aren't available in headless/background sessions. Sleep preserves your logged-in session; shutdown/restart and FileVault login aren't automated. Permission prompts can still require your attention after work resumes.
+
 ## How it works
 
-The app uses the system-wide `SleepDisabled` setting (`pmset disablesleep`) to prevent lid-closed sleep. Hooks report activity; they do not change power settings themselves.
+The app uses the system-wide `SleepDisabled` setting (`pmset disablesleep`) to prevent lid-closed sleep. Hooks and T3's native orchestration state report activity; they do not change power settings themselves.
 
 ```text
 Claude Code ── hooks ──▶ agent-lid-hook                  ──┐
@@ -91,8 +113,10 @@ Session files are in `~/Library/Application Support/AgentLidClosed/sessions/`. C
 - **Activity.** `UserPromptSubmit` and tool hooks mark work active. `SubagentStart`/`SubagentStop` track child activity without overwriting the main session. Claude's `Stop` payload can also report background tasks.
 - **Waiting.** Codex `Stop`, `request_user_input` tool calls and `Interrupt` hooks mark a session as waiting. Its `PermissionRequest` keeps work active because an approval hook may allow a command without showing a prompt. Claude uses its question tools, notifications and stop events.
 - **Grace periods.** Codex waits `sleepGraceSeconds` after entering a waiting state. Claude waits for its input notification, up to `notifyTimeoutSeconds`, or uses the shorter grace after the notification arrives.
-- **Claude interruptions.** Claude does not emit an Esc hook. After 20 s without activity, its transcript is checked for `[Request interrupted by user]`. Codex uses its `Interrupt` hook; its transcript format is not parsed.
+- **Interruptions.** Claude does not emit an Esc hook. After 20 s without activity, its transcript is checked for `[Request interrupted by user]`. Codex uses its `Interrupt` hook and typed abort events; its local event reader also discovers quota failures.
 - **Display.** Brightness is saved before setting it to 0. Once dimmed, it stays there during lid-closed sleep and is restored when the lid opens, checked twice a second. The saved value survives app restarts.
+- **T3 Code.** Every 5 s, a short read-only SQLite transaction reads native activity and armed quota recovery. The live server PID and start time guard against abandoned runtime files. Real progress timestamps retain the normal stale-work limits. A temporary read failure retains the previous snapshot for 60 s and preserves an already scheduled future alarm. The bridge never writes the T3 database or dispatches a turn.
+- **Quota wakes.** The status-line command, Codex event reader and hooks share the same file lock. Unchanged Claude status-line telemetry is written at most once every 30 s. Quota telemetry preserves the owning process and doesn't refresh its activity heartbeat. A confirmed Codex quota failure marks that session waiting. A fixed root-owned helper schedules/cancels only wake events tagged `local.AgentLidClosed.quota`; it cannot shut down or power on the Mac. The app re-checks absolute reset times after wake and recovers its alarms after a crash.
 
 ### Safety
 
@@ -112,7 +136,7 @@ Session files are in `~/Library/Application Support/AgentLidClosed/sessions/`. C
 | Pause | Automatic Mode is off |
 | Warning triangle | Setup needed, low battery or thermal limit; normal sleep |
 
-The menu lists each session's tool, project and activity, plus lid state, system sleep state and whether the display is off. **Automatic Mode** controls sleep management. **Turn Display Off When Lid Closed** controls dimming and is on by default. **Open Log** and **Quit** are also available.
+The menu lists each session's tool, project and activity, plus lid state, system sleep state and whether the display is off. **Automatic Mode** controls sleep management. **Turn Display Off When Lid Closed** controls dimming and is on by default. **Wake for Usage Resets** controls the shared Claude/Codex quota wake alarm and is also on by default. **Open Log** and **Quit** are available.
 
 ## Settings
 
@@ -126,14 +150,14 @@ Use `defaults write local.AgentLidClosed <key> <number>`. Timing and safety sett
 | `workingStaleMinutes` | 30 | Ignore working sessions and subagent markers after this long without events |
 | `backgroundStaleMinutes` | 60 | Ignore Claude background-only work after this long without events |
 
-Use the menu to toggle Automatic Mode and display dimming.
+Use the menu to toggle Automatic Mode, display dimming and quota wakes. The latter can also be set with `defaults write local.AgentLidClosed wakeForQuotaReset -bool false` before starting the app.
 
 ## Limits
 
-- **Codex hook trust.** Installing the file does not trust the hooks. Review them through `/hooks` before relying on this app. Older Codex versions without these lifecycle events are unsupported.
+- **Codex hook trust outside T3.** Installing the file does not trust the hooks. Review them through `/hooks` before relying on this app. Older Codex versions without these lifecycle events are unsupported.
 - **Approval prompts.** Codex has no approval-accepted hook, and another hook can auto-allow a command. The app therefore keeps Codex awake through approval requests until tool completion, turn completion or interruption (subject to stale timeouts). For Claude, approving and immediately closing the lid can still allow sleep until that tool completes; bypassing permission prompts avoids that gap.
 - **Codex background work.** Detached commands that outlive a completed turn are not included in Codex's `Stop` payload. They are not independently tracked. Claude background tasks and lifecycle-reported subagents are tracked.
-- **Scheduled wakeups.** Timers and scheduled future turns do not keep the Mac awake between turns.
+- **Other scheduled work.** Only supported Claude/Codex subscription-limit waits schedule a wake. Timers and other scheduled future turns do not keep the Mac awake between turns.
 - **Hooks that continue a turn.** Another `Stop` or `SubagentStop` hook can request more work after this app has recorded completion. Until the next activity hook, the session may count as waiting. Increase the grace period or turn off Automatic Mode for long continuation-only workflows.
 - **Manual sleep.** macOS may ignore manual sleep while the hold is active. Turn off Automatic Mode or quit first.
 - **Private brightness API.** Apple silicon brightness control uses `DisplayServices`. If a future macOS removes that API, dimming is skipped and a failure is logged.
@@ -146,8 +170,9 @@ swift build                    # debug build, when SwiftPM is available
 ./scripts/test-hook.sh         # Claude + Codex hook/state regression checks
 python3 scripts/test-install.py # hook merging and upgrade compatibility checks
 ./scripts/build-app.sh         # build/AgentLidClosed.app
+./scripts/test-quota.sh         # reset planning + hook/status-line/app dry-run checks
 
-# Quit the installed app before running this check:
+# Dry runs can coexist with the installed app:
 python3 scripts/test-display.py # both tools: dim, sleep, restore; no real power changes
 
 # Run manually in dry-run mode:

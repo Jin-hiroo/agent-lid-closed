@@ -26,6 +26,8 @@ else
         -emit-module-path "$BIN/LidCore.swiftmodule" >&2
     swiftc "${FLAGS[@]}" -I "$BIN" -L "$BIN" -lLidCore \
         Sources/agent-lid-hook/main.swift -o "$BIN/agent-lid-hook" >&2
+    swiftc "${FLAGS[@]}" -I "$BIN" -L "$BIN" -lLidCore \
+        Sources/agent-lid-wake/main.swift -o "$BIN/agent-lid-wake" >&2
     swiftc "${FLAGS[@]}" -parse-as-library -I "$BIN" -L "$BIN" -lLidCore \
         Sources/AgentLidClosed/*.swift -o "$BIN/AgentLidClosed" >&2
     echo "$BIN"
