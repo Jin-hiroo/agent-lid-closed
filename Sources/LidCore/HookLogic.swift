@@ -10,6 +10,8 @@ public struct HookInput: Decodable, Sendable {
     public var notificationType: String?
     /// SessionStart: startup, resume, clear or compact.
     public var source: String?
+    public var error: String?
+    public var turnID: String?
     public var cwd: String?
     public var transcriptPath: String?
     /// Stop: statuses of the session's background tasks. nil if the payload has none.
@@ -17,13 +19,16 @@ public struct HookInput: Decodable, Sendable {
 
     public init(event: String, sessionID: String, agentID: String? = nil, toolName: String? = nil,
                 notificationType: String? = nil, source: String? = nil, cwd: String? = nil,
-                transcriptPath: String? = nil, backgroundTaskStatuses: [String]? = nil) {
+                transcriptPath: String? = nil, backgroundTaskStatuses: [String]? = nil, error: String? = nil,
+                turnID: String? = nil) {
         self.event = event
         self.sessionID = sessionID
         self.agentID = agentID
         self.toolName = toolName
         self.notificationType = notificationType
         self.source = source
+        self.error = error
+        self.turnID = turnID
         self.cwd = cwd
         self.transcriptPath = transcriptPath
         self.backgroundTaskStatuses = backgroundTaskStatuses
@@ -36,6 +41,8 @@ public struct HookInput: Decodable, Sendable {
         case toolName = "tool_name"
         case notificationType = "notification_type"
         case source
+        case error
+        case turnID = "turn_id"
         case cwd
         case transcriptPath = "transcript_path"
         case backgroundTasks = "background_tasks"
@@ -54,6 +61,8 @@ public struct HookInput: Decodable, Sendable {
         toolName = try? c.decodeIfPresent(String.self, forKey: .toolName)
         notificationType = try? c.decodeIfPresent(String.self, forKey: .notificationType)
         source = try? c.decodeIfPresent(String.self, forKey: .source)
+        error = try? c.decodeIfPresent(String.self, forKey: .error)
+        turnID = try? c.decodeIfPresent(String.self, forKey: .turnID)
         cwd = try? c.decodeIfPresent(String.self, forKey: .cwd)
         transcriptPath = try? c.decodeIfPresent(String.self, forKey: .transcriptPath)
         backgroundTaskStatuses = (try? c.decodeIfPresent([BackgroundTask].self, forKey: .backgroundTasks))?
@@ -116,6 +125,12 @@ public enum HookLogic {
         case "PreCompact", "PostCompact":
             return provider == .codex ? .keepState : .ignore
         case "Notification":
+            if input.notificationType == "quota_auto_resume_fired" {
+                return .set(.working, reason: "working", notified: false)
+            }
+            if ["quota_auto_resume_stale", "quota_auto_resume_disabled"].contains(input.notificationType ?? "") {
+                return .set(.waiting, reason: "usage resume cancelled", notified: true)
+            }
             if input.notificationType == "idle_prompt" {
                 return .set(.waiting, reason: nil, notified: true)
             }
@@ -133,6 +148,9 @@ public enum HookLogic {
                 ? .set(.background, reason: "background tasks", notified: false)
                 : .set(.waiting, reason: "finished", notified: provider == .codex)
         case "StopFailure":
+            if provider == .claude && input.error == "rate_limit" {
+                return .set(.waiting, reason: "usage limit", notified: true)
+            }
             return .set(.waiting, reason: "API error", notified: false)
         default:
             return .ignore
@@ -143,6 +161,12 @@ public enum HookLogic {
     public static func apply(_ action: HookAction, input: HookInput, owner: ProcessIdentity?,
                              store: SessionStore, now: Double, provider: AgentProvider = .claude) throws {
         let existing = store.load(input.sessionID)
+        if provider == .codex, input.agentID == nil,
+           let currentTurn = existing?.turnID, let incomingTurn = input.turnID, currentTurn != incomingTurn,
+           !["UserPromptSubmit", "SessionStart", "SessionEnd"].contains(input.event) {
+            // A delayed tool/Stop hook from an interrupted turn cannot replace its successor.
+            return
+        }
         func fresh(_ state: AgentState, _ reason: String) -> SessionRecord {
             SessionRecord(sessionID: input.sessionID, state: state, reason: reason, notified: false,
                           stateSince: now, updatedAt: now, pid: 0, pidStart: 0)
@@ -181,6 +205,32 @@ public enum HookLogic {
             }
         }
         record.updatedAt = now
+        // The status-line callback can arrive before or after StopFailure. Preserve its
+        // cached limits across state changes; only a real quota failure arms a wake.
+        record.quotaUsage = existing?.quotaUsage
+        record.quotaObservedAt = existing?.quotaObservedAt
+        record.turnID = input.turnID ?? existing?.turnID
+        record.codexTranscriptOffset = existing?.codexTranscriptOffset
+        record.codexTranscriptFileID = existing?.codexTranscriptFileID
+        if input.event == "StopFailure", input.error == "rate_limit", provider == .claude {
+            record.quotaWaitSince = now
+            record.quotaResetAt = nil
+            if let observed = record.quotaObservedAt, now - observed >= 0, now - observed < 600 {
+                record.quotaResetAt = record.quotaUsage?.blockingReset(after: now)
+            }
+        } else if provider == .codex, input.event == "Stop", existing?.reason == "usage limit",
+                  existing?.quotaWaitSince != nil {
+            // Stop bookkeeping can race the local error reader in either order.
+            record.reason = "usage limit"
+            record.quotaWaitSince = existing?.quotaWaitSince
+            record.quotaResetAt = existing?.quotaResetAt
+        } else if case .set(_, let reason, _) = action, reason != nil {
+            record.quotaWaitSince = nil
+            record.quotaResetAt = nil
+        } else {
+            record.quotaWaitSince = existing?.quotaWaitSince
+            record.quotaResetAt = existing?.quotaResetAt
+        }
         record.provider = provider
         if let owner {
             record.pid = owner.pid

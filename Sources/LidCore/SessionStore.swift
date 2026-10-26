@@ -27,6 +27,16 @@ public struct SessionRecord: Codable, Sendable, Equatable {
     public var transcriptPath: String?
     /// Missing in records written before Codex support was added.
     public var provider: AgentProvider?
+    public var quotaUsage: QuotaUsage?
+    public var quotaObservedAt: Double?
+    public var quotaWaitSince: Double?
+    /// Latched before the reset, so a status refresh at the reset cannot erase the warm-up hold.
+    public var quotaResetAt: Double?
+    /// Codex's hooks and local event stream identify the turn independently of its session.
+    public var turnID: String?
+    /// Persist the read position so restarting the app cannot replay a cancelled quota failure.
+    public var codexTranscriptOffset: UInt64?
+    public var codexTranscriptFileID: UInt64?
 
     public var client: AgentProvider { provider ?? .claude }
 }

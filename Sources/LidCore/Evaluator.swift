@@ -25,7 +25,7 @@ public struct SessionSnapshot: Identifiable, Sendable, Equatable {
         case .working: "working"
         case .subagents(let count): count == 1 ? "1 subagent running" : "\(count) subagents running"
         case .background: "background tasks running"
-        case .waiting(let reason): "waiting for you (\(reason))"
+        case .waiting(let reason): reason == "usage limit" ? "waiting for usage reset" : "waiting for you (\(reason))"
         case .interrupted: "interrupted"
         case .stale: "no activity, ignored"
         }
