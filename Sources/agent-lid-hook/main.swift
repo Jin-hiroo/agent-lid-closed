@@ -38,7 +38,7 @@ func printStatus() {
     if evaluation.sessions.isEmpty { print("No agent sessions") }
     for session in evaluation.sessions {
         let minutes = Int(now - session.since.timeIntervalSince1970) / 60
-        print("\(session.provider.name) · \(session.project)  \(session.label)  (\(minutes) min)  \(session.id)")
+        print("\(session.accountName) · \(session.project)  \(session.label)  (\(minutes) min)  \(session.id)")
     }
     for id in evaluation.deadSessionIDs { print("\(id)  process gone") }
     if evaluation.keepAwake {

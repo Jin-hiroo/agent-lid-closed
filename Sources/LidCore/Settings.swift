@@ -19,14 +19,17 @@ public struct LidSettings: Sendable {
     public static func load(from defaults: UserDefaults) -> LidSettings {
         var settings = LidSettings()
         // double(forKey:) also parses strings, as set by `defaults write -string` or `-key value` arguments.
+        // Values are clamped, so a stray `defaults write` can't crash the app.
         func value(_ key: String) -> Double? {
-            defaults.object(forKey: key) == nil ? nil : max(0, defaults.double(forKey: key))
+            guard defaults.object(forKey: key) != nil else { return nil }
+            let value = defaults.double(forKey: key)
+            return value.isFinite ? min(max(0, value), 1_000_000) : nil
         }
         if let v = value("workingStaleMinutes") { settings.workingStale = v * 60 }
         if let v = value("backgroundStaleMinutes") { settings.backgroundStale = v * 60 }
         if let v = value("notifyTimeoutSeconds") { settings.notifyTimeout = v }
         if let v = value("sleepGraceSeconds") { settings.sleepGrace = v }
-        if let v = value("batteryFloorPercent") { settings.batteryFloor = Int(v) }
+        if let v = value("batteryFloorPercent") { settings.batteryFloor = Int(min(v, 100)) }
         return settings
     }
 }

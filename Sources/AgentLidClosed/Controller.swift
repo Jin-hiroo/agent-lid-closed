@@ -28,11 +28,17 @@ final class Controller {
     private(set) var dimEnabled: Bool
     private(set) var wakeEnabled: Bool
     private(set) var nextQuotaReset: Date?
-    private(set) var nextQuotaProvider: AgentProvider?
+    private(set) var nextQuotaAccount: String?
     private(set) var quotaHoldUntil: Date?
-    private(set) var quotaHoldingProviders: [AgentProvider] = []
+    private(set) var quotaHoldingAccounts: [String] = []
     private(set) var wakeError: String?
     private(set) var t3Error: String?
+    private(set) var switchEnabled: Bool
+    /// The latest account switch, or why it couldn't be made.
+    private(set) var switchStatus: String?
+    private(set) var t3Running = false
+    /// T3 Code has two configured, enabled accounts of the same tool.
+    private(set) var switchAvailable = false
     /// This app has turned the built-in display's backlight off.
     private(set) var displayDimmed = false
 
@@ -63,13 +69,47 @@ final class Controller {
     @ObservationIgnored private var lastT3WakeAt: Double?
     @ObservationIgnored private var wakeSynchronized = false
     @ObservationIgnored private var wakeRetryAt = Date.distantPast
+    /// Account switches by T3 thread ID, until the conversation leaves the limited run.
+    @ObservationIgnored private var switches: [String: SwitchAttempt] = [:]
+    @ObservationIgnored private var lastSwitchAt: [String: Double] = [:]
+
+    private struct SwitchAttempt {
+        enum Phase: Equatable {
+            case delivering
+            case accepted(at: Double)
+            case retrying(at: Double)
+            case abandoned
+        }
+        static let acceptedHold: Double = 120
+        var runID: String
+        var to: String
+        var phase = Phase.delivering
+        var failures = 0
+
+        /// The Mac stays awake until T3 starts the continued run, or delivery gives up.
+        func keepsAwake(now: Double) -> Bool {
+            switch phase {
+            case .delivering: true
+            case .retrying(let at): now < at + Controller.retryDelay
+            case .accepted(let at): now - at < Self.acceptedHold
+            case .abandoned: false
+            }
+        }
+    }
+
+    nonisolated private static let retryDelay: Double = 30
+    private static let maximumDeliveryFailures = 3
+    /// One conversation moves at most this often, even if its accounts' reset times are wrong.
+    private static let switchInterval: Double = 600
 
     init() {
         Paths.migratePreferences(to: .standard)
-        UserDefaults.standard.register(defaults: ["autoEnabled": true, "dimDisplay": true, "wakeForQuotaReset": true])
+        UserDefaults.standard.register(defaults: ["autoEnabled": true, "dimDisplay": true, "wakeForQuotaReset": true,
+                                                  "switchAccountAtLimit": true])
         autoEnabled = UserDefaults.standard.bool(forKey: "autoEnabled")
         dimEnabled = UserDefaults.standard.bool(forKey: "dimDisplay")
         wakeEnabled = UserDefaults.standard.bool(forKey: "wakeForQuotaReset")
+        switchEnabled = UserDefaults.standard.bool(forKey: "switchAccountAtLimit")
     }
 
     func start() {
@@ -149,6 +189,14 @@ final class Controller {
         evaluate()
     }
 
+    func setSwitchEnabled(_ enabled: Bool) {
+        switchEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "switchAccountAtLimit")
+        Log.write("Switch accounts at usage limits \(enabled ? "on" : "off")")
+        if !enabled { switchStatus = nil }
+        evaluate()
+    }
+
     func evaluate() {
         if watcher == nil {
             try? FileManager.default.createDirectory(at: Paths.sessionsDir, withIntermediateDirectories: true)
@@ -160,8 +208,11 @@ final class Controller {
         let now = Date().timeIntervalSince1970
         settings = LidSettings.load(from: .standard)
         codexQuota.refresh(store: store, now: now, isAlive: ProcessLookup.isAlive)
-        let t3 = t3Cache.resolve(T3Monitor.read(now: now), now: now)
+        var t3 = t3Cache.resolve(T3Monitor.read(now: now), now: now)
         t3Error = t3.error
+        t3Running = t3.isRunning
+        if t3.error == nil { switchAvailable = Self.canSwitch(t3.accounts) }
+        updateAccountSwitches(&t3, now: now)
         let contents = t3.merging(store.loadAll())
         let result = Evaluator.evaluate(contents, now: now, settings: settings,
                                         isAlive: ProcessLookup.isAlive,
@@ -182,9 +233,9 @@ final class Controller {
             lastT3WakeAt = QuotaWakePlan.evaluate(t3.records, now: now, isAlive: ProcessLookup.isAlive).nextWakeAt
         }
         nextQuotaReset = plan.nextResetAt.map(Date.init(timeIntervalSince1970:))
-        nextQuotaProvider = plan.nextResetProvider
+        nextQuotaAccount = plan.nextResetAccountName
         quotaHoldUntil = plan.holdUntil.map(Date.init(timeIntervalSince1970:))
-        quotaHoldingProviders = plan.holdingProviders
+        quotaHoldingAccounts = plan.holdingAccountNames
         // Failed telemetry cannot cancel a known future alarm. Explicit pause,
         // disable and safety blockers still cancel it immediately.
         let desiredWake: Double?
@@ -224,7 +275,7 @@ final class Controller {
     var headline: String {
         if let blocker { return Self.describe(blocker) }
         if quotaHoldUntil != nil {
-            let providers = quotaHoldingProviders.map(\.name).joined(separator: " and ")
+            let providers = quotaHoldingAccounts.joined(separator: " and ")
             return "Keeping your Mac awake for \(providers)'s usage reset"
         }
         if holding, let pendingSleepAt {
@@ -240,11 +291,12 @@ final class Controller {
         var text = "Lid \(lidClosed ? "closed" : "open") · system sleep \(sleepDisabled ? "disabled" : "enabled")"
         if displayDimmed { text += " · display off" }
         if let nextQuotaReset {
-            text += "\n\(nextQuotaProvider?.name ?? "Agent") usage resets \(nextQuotaReset.formatted(date: .abbreviated, time: .shortened))"
+            text += "\n\(nextQuotaAccount ?? "Agent") usage resets \(nextQuotaReset.formatted(date: .abbreviated, time: .shortened))"
         }
         if wakeEnabled && !Power.wakeIsSetUp { text += "\nWake setup needed: run scripts/install.sh" }
         if let wakeError { text += "\n\(wakeError)" }
         if let t3Error { text += "\n\(t3Error)" }
+        if let switchStatus { text += "\n\(switchStatus)" }
         if let lastError { text += "\n\(lastError)" }
         return text
     }
@@ -260,6 +312,116 @@ final class Controller {
     }
 
     // MARK: Private
+
+    /// Moves T3 conversations blocked by one account's usage limit to another account of
+    /// the same tool and continues them there. Without an available account, the wake is
+    /// brought forward to the earliest reset of another account.
+    private func updateAccountSwitches(_ t3: inout T3Monitor.Snapshot, now: Double) {
+        if t3.error == nil {
+            // A new run, archive or settlement ends the attempt for that limited run.
+            let limitedRuns = Dictionary(t3.limitedThreads.map { ($0.threadID, $0.runID) },
+                                         uniquingKeysWith: { first, _ in first })
+            switches = switches.filter { limitedRuns[$0.key] == $0.value.runID }
+            lastSwitchAt = lastSwitchAt.filter { now - $0.value < Self.switchInterval }
+        }
+        var earlierResets: [String: AccountSwitchPlanner.EarlierReset] = [:]
+        if t3.error == nil {
+            let plan = switchPlan(t3, now: now)
+            earlierResets = plan.earlierResets
+            // A retry is dropped once its switch is no longer wanted, for example
+            // after turning switching off or when the target becomes limited.
+            let planned = Dictionary(plan.switches.map { ($0.threadID, $0) }, uniquingKeysWith: { first, _ in first })
+            switches = switches.filter { id, attempt in
+                guard case .retrying = attempt.phase else { return true }
+                return planned[id].map { $0.runID == attempt.runID && $0.to.id == attempt.to } ?? false
+            }
+            let due = plan.switches.filter { candidate in
+                guard let attempt = switches[candidate.threadID] else {
+                    return lastSwitchAt[candidate.threadID] == nil
+                }
+                if case .retrying(let at) = attempt.phase { return now >= at }
+                return false
+            }
+            if !due.isEmpty { deliver(due, now: now) }
+        }
+        let delivering = Set(switches.filter { $0.value.keepsAwake(now: now) }.keys)
+        t3.applyAccountSwitching(delivering: delivering, earlierResets: earlierResets, now: now)
+    }
+
+    static func canSwitch(_ accounts: [T3Account]) -> Bool {
+        Dictionary(grouping: accounts.filter { $0.configured && $0.enabled }, by: \.driver).values.contains { $0.count > 1 }
+    }
+
+    private func switchPlan(_ t3: T3Monitor.Snapshot, now: Double) -> AccountSwitchPlanner.Plan {
+        guard switchEnabled else { return AccountSwitchPlanner.Plan() }
+        return AccountSwitchPlanner.plan(threads: t3.limitedThreads, accounts: t3.accounts,
+                                         limitedUntil: t3.limitedUntil, now: now,
+                                         continuationDisabled: t3.continuationDisabled)
+    }
+
+    private func deliver(_ due: [AccountSwitch], now: Double) {
+        for item in due {
+            var attempt = switches[item.threadID] ?? SwitchAttempt(runID: item.runID, to: item.to.id)
+            attempt.phase = .delivering
+            switches[item.threadID] = attempt
+            // Counted from the first try, so a slow reply can't let the conversation move again.
+            if lastSwitchAt[item.threadID] == nil { lastSwitchAt[item.threadID] = now }
+            Log.write("\(item.from.name) reached its usage limit: moving \(item.project) to \(item.to.name)")
+        }
+        let commands = due.map { (id: $0.commandID, json: $0.command) }
+        Task {
+            let outcomes = await T3Commands.dispatch(commands, directory: T3Monitor.defaultDirectory) {
+                await self.stillWanted(due)
+            }
+            finishDelivery(due, outcomes)
+        }
+    }
+
+    /// Re-reads T3 just before sending. A snooze, settlement, opt-out, new run, model
+    /// change or toggle change made while the credential was issued withdraws the switch.
+    private func stillWanted(_ due: [AccountSwitch]) -> Set<String> {
+        let now = Date().timeIntervalSince1970
+        let t3 = T3Monitor.read(now: now)
+        guard t3.error == nil else { return [] }
+        let current = switchPlan(t3, now: now).switches
+        return Set(due.filter { current.contains($0) }.map(\.commandID))
+    }
+
+    private func finishDelivery(_ delivered: [AccountSwitch], _ outcomes: [String: T3Commands.Outcome]) {
+        let now = Date().timeIntervalSince1970
+        for item in delivered {
+            // A newer limited run of the same conversation has its own attempt.
+            if let current = switches[item.threadID], current.runID != item.runID { continue }
+            var attempt = switches[item.threadID] ?? SwitchAttempt(runID: item.runID, to: item.to.id)
+            switch outcomes[item.commandID] ?? .failed("No reply from T3 Code") {
+            case .accepted:
+                attempt.phase = .accepted(at: now)
+                switchStatus = "Moved \(item.project) to \(item.to.name)"
+                Log.write("Continued \(item.project) on \(item.to.name)")
+            case .withdrawn:
+                switches[item.threadID] = nil
+                lastSwitchAt[item.threadID] = nil
+                Log.write("Didn't move \(item.project): it changed before the switch was sent")
+                continue
+            case .rejected(let reason):
+                attempt.phase = .abandoned
+                switchStatus = "Couldn't move \(item.project) to \(item.to.name): \(reason)"
+                Log.write("T3 refused to move \(item.project) to \(item.to.name): \(reason)")
+            case .failed(let reason):
+                attempt.failures += 1
+                if attempt.failures >= Self.maximumDeliveryFailures {
+                    attempt.phase = .abandoned
+                    switchStatus = "Couldn't move \(item.project) to \(item.to.name): \(reason)"
+                    Log.write("Gave up moving \(item.project) to \(item.to.name): \(reason)")
+                } else {
+                    attempt.phase = .retrying(at: now + Self.retryDelay)
+                    Log.write("Couldn't move \(item.project) to \(item.to.name) yet: \(reason)")
+                }
+            }
+            switches[item.threadID] = attempt
+        }
+        evaluate()
+    }
 
     private func synchronizeWake(_ desired: Double?) {
         guard Power.wakeIsSetUp, Date() >= wakeRetryAt,
@@ -414,7 +576,7 @@ final class Controller {
     }
 
     private func logSessionsIfChanged() {
-        let summary = evaluation.sessions.map { "\($0.provider.name) · \($0.project) \($0.label)" }.joined(separator: "; ")
+        let summary = evaluation.sessions.map { "\($0.accountName) · \($0.project) \($0.label)" }.joined(separator: "; ")
         guard summary != loggedSummary else { return }
         loggedSummary = summary
         Log.write("Sessions: \(summary.isEmpty ? "none" : summary)")

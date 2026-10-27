@@ -72,8 +72,10 @@ public struct QuotaWakePlan: Sendable, Equatable {
     public var nextWakeAt: Double?
     public var nextResetAt: Double?
     public var nextResetProvider: AgentProvider?
+    public var nextResetAccountName: String?
     public var holdUntil: Double?
     public var holdingProviders: [AgentProvider] = []
+    public var holdingAccountNames: [String] = []
 
     public static func evaluate(_ records: [SessionRecord], now: Double,
                                 isAlive: (Int32, Double) -> Bool) -> QuotaWakePlan {
@@ -85,19 +87,23 @@ public struct QuotaWakePlan: Sendable, Equatable {
                   since.isFinite, reset.isFinite, reset > since,
                   reset - since <= (record.sessionID.hasPrefix("t3:") ? maximumScheduledWait : maximumWait),
                   now < reset + resumeGrace else { continue }
+            let account = record.quotaAccountName ?? record.displayName
             let wake = floor(reset - leadTime)
             if wake > now + 5 {
                 plan.nextWakeAt = min(plan.nextWakeAt ?? wake, wake)
             } else {
                 plan.holdUntil = max(plan.holdUntil ?? 0, reset + resumeGrace)
                 if !plan.holdingProviders.contains(record.client) { plan.holdingProviders.append(record.client) }
+                if !plan.holdingAccountNames.contains(account) { plan.holdingAccountNames.append(account) }
             }
             if reset < (plan.nextResetAt ?? .infinity) {
                 plan.nextResetAt = reset
                 plan.nextResetProvider = record.client
+                plan.nextResetAccountName = account
             }
         }
         plan.holdingProviders.sort { $0.name < $1.name }
+        plan.holdingAccountNames.sort()
         return plan
     }
 }

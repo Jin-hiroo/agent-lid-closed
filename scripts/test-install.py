@@ -21,9 +21,25 @@ def module(name, filename):
 
 hooks = module('hooks', 'hooks.py')
 migration = module('migration', 'migrate-state.py')
+t3_setup = module('t3_setup', 'configure-t3.py')
 
 
 class InstallationTests(unittest.TestCase):
+    def test_t3_upgrades_preserve_explicit_recovery_opt_out(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / 'settings.json'
+            original = json.dumps({'autoResumeLimitedThreads': False, 'other': 42})
+            path.write_text(original)
+            self.assertIsNone(t3_setup.enable_recovery(path, preserve_choice=True))
+            self.assertEqual(path.read_text(), original)
+            result = subprocess.run(['python3', str(ROOT / 'scripts/configure-t3.py'), '--preserve-choice', str(path)],
+                                    capture_output=True, text=True, check=True)
+            self.assertIn('preserving your disabled', result.stdout)
+            self.assertEqual(path.read_text(), original)
+            self.assertTrue(t3_setup.enable_recovery(path))
+            self.assertTrue(json.loads(path.read_text())['autoResumeLimitedThreads'])
+            self.assertIn('scripts/configure-t3.py --preserve-choice', (ROOT / 'scripts/install.sh').read_text())
+
     def test_t3_failure_precedes_power_changes_and_app_stop(self):
         source = (ROOT / 'scripts/install.sh').read_text()
         start = source.index('echo "==> Enabling T3 Code usage-reset continuation')
@@ -176,6 +192,159 @@ sudo() {
             self.assertTrue(alias.is_symlink())
             self.assertTrue(settings['other'])
             self.assertEqual(json.loads(pathlib.Path(str(target) + '.bak').read_text()), {'other': True})
+
+    def test_plan_adds_hooks_only_for_tools_that_are_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = pathlib.Path(temp)
+            manifest = str(home / 'state/hook-targets.json')
+            env = {'HOME': str(home)}
+
+            def plan(found=(), env=env, **options):
+                return hooks.plan(manifest, environ=env, which=lambda name: name in found or None, **options)
+            self.assertEqual(plan(), {'claude': [], 'codex': []})
+            self.assertEqual(plan(found=('codex',)), {'claude': [], 'codex': [str(home / '.codex/hooks.json')]})
+            (home / '.claude').mkdir()
+            self.assertEqual(plan()['claude'], [str(home / '.claude/settings.json')])
+            self.assertEqual(plan(no_claude=True, force_codex=True),
+                             {'claude': [], 'codex': [str(home / '.codex/hooks.json')]})
+            # The shell's account and named folders are added to the default one.
+            work = home / 'work-claude'
+            self.assertEqual(plan(env=dict(env, CLAUDE_CONFIG_DIR=str(work)), claude_dirs=[str(home / 'other')])['claude'],
+                             [str(home / '.claude/settings.json'), str(work / 'settings.json'),
+                              str(home / 'other/settings.json')])
+            # Files that already have the hooks keep them current, even if the tool is gone.
+            codex = home / 'custom-codex'
+            codex.mkdir()
+            (codex / 'hooks.json').write_text(json.dumps({'hooks': {'Stop': [{'hooks': [
+                {'type': 'command', 'command': '/old/agent-lid-hook --provider codex'}]}]}}))
+            self.assertEqual(plan(env=dict(env, CODEX_HOME=str(codex)))['codex'], [str(codex / 'hooks.json')])
+            self.assertEqual(plan(env=dict(env, CODEX_HOME=str(codex)), no_codex=True)['codex'], [])
+            # An earlier install in ~/.codex is kept current after CODEX_HOME moves elsewhere.
+            (home / '.codex').mkdir()
+            (home / '.codex/hooks.json').write_text((codex / 'hooks.json').read_text())
+            self.assertEqual(plan(found=('codex',), env=dict(env, CODEX_HOME=str(home / 'new-codex')))['codex'],
+                             [str(home / 'new-codex/hooks.json'), str(home / '.codex/hooks.json')])
+
+    def test_plan_skips_relative_empty_and_multiline_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = pathlib.Path(temp)
+            (home / '.claude').mkdir()
+            manifest = home / 'hook-targets.json'
+            odd = home / 'a\nb'
+            odd.mkdir()
+            (odd / 'settings.json').write_text('{}')
+            manifest.write_text(json.dumps({'claude': [str(odd / 'settings.json')], 'codex': []}))
+            env = {'HOME': str(home), 'CLAUDE_CONFIG_DIR': 'relative', 'CODEX_HOME': 'also-relative'}
+            planned = hooks.plan(str(manifest), claude_dirs=['', 'profiles/work', str(home / 'a\nc'), str(home / 'ok')],
+                                 environ=env, which=lambda name: name == 'codex')
+            self.assertEqual(planned, {'claude': [str(home / '.claude/settings.json'), str(home / 'ok/settings.json')],
+                                       'codex': [str(home / '.codex/hooks.json')]})
+
+    def test_uninstall_targets_cover_old_locations_and_unreadable_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = pathlib.Path(temp)
+            marked = {'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': '/x/agent-lid-hook'}]}]}}
+            for folder in ('.claude', '.codex', 'work', 'shell', 'clean'):
+                (home / folder).mkdir()
+            (home / '.claude/settings.json').write_text(json.dumps(marked))
+            (home / '.codex/hooks.json').write_text('{"hooks": not json, "agent-lid-hook"')
+            (home / 'work/settings.json').write_text(json.dumps(marked))
+            (home / 'shell/settings.json').write_text(json.dumps(marked))
+            (home / 'clean/settings.json').write_text('{"theme": "dark"}')
+            manifest = home / 'hook-targets.json'
+            manifest.write_text(json.dumps({'claude': [str(home / 'work/settings.json'), str(home / 'clean/settings.json'),
+                                                       'relative/settings.json'], 'codex': []}))
+            env = {'HOME': str(home), 'CLAUDE_CONFIG_DIR': str(home / 'shell'), 'CODEX_HOME': str(home / 'gone')}
+            self.assertEqual(hooks.targets(str(manifest), environ=env),
+                             [str(home / 'work/settings.json'), str(home / '.claude/settings.json'),
+                              str(home / '.codex/hooks.json'), str(home / 'shell/settings.json')])
+
+    def test_uninstall_continues_past_a_file_it_cannot_fix(self):
+        source = (ROOT / 'scripts/uninstall.sh').read_text()
+        snippet = source[source.index('MANIFEST='):source.index('# Clear a "Start at Login"')]
+        with tempfile.TemporaryDirectory() as temp:
+            home = pathlib.Path(temp)
+            marked = {'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': '/x/agent-lid-hook'}]}]}, 'theme': 1}
+            (home / '.claude').mkdir()
+            (home / '.codex').mkdir()
+            (home / '.codex/hooks.json').write_text('{"agent-lid-hook": ')
+            (home / '.claude/settings.json').write_text(json.dumps(marked))
+            env = {k: v for k, v in os.environ.items() if k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME')}
+            result = subprocess.run(['/bin/bash', '-c', 'set -euo pipefail\n' + snippet + 'echo "END $HOOK_FAILED"'],
+                                    cwd=ROOT, env=dict(env, HOME=str(home)), text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('END 1', result.stdout)
+            self.assertIn("couldn't remove the hooks from " + str(home / '.codex/hooks.json'), result.stderr)
+            self.assertEqual(json.loads((home / '.claude/settings.json').read_text()), {'theme': 1})
+
+    def test_bootstrap_failure_keeps_start_at_login_off(self):
+        source = (ROOT / 'scripts/install.sh').read_text()
+        snippet = source[source.index('DISABLED='):source.index('\necho\necho "Done.')]
+        mock = '''
+launchctl() {
+    echo "$1" >> "$CALLS"
+    case "$1" in
+        print-disabled) printf '\\t"local.AgentLidClosed" => disabled\\n' ;;
+        bootstrap) return 5 ;;
+    esac
+}
+'''
+        with tempfile.TemporaryDirectory() as temp:
+            calls = pathlib.Path(temp) / 'calls'
+            result = subprocess.run(['/bin/bash', '-c', 'set -euo pipefail\nLABEL=local.AgentLidClosed\nAGENT=/x\n'
+                                     + mock + snippet + '\necho REACHED'],
+                                    env=dict(os.environ, CALLS=str(calls)), text=True, capture_output=True)
+            self.assertEqual(result.returncode, 5)
+            self.assertNotIn('REACHED', result.stdout)
+            self.assertEqual(calls.read_text().split(), ['print-disabled', 'enable', 'bootstrap', 'disable'])
+
+    def test_relative_config_folders_resolve_where_the_installer_runs(self):
+        source = (ROOT / 'scripts/install.sh').read_text()
+        snippet = source[source.index('PLAN_ARGS=()'):source.index('cd "$(dirname "$0")/.."')]
+        with tempfile.TemporaryDirectory() as temp:
+            script = 'set -euo pipefail\nusage() { :; }\n' + snippet + 'printf "%s\\n" "${PLAN_ARGS[@]}"'
+            result = subprocess.run(['/bin/bash', '-c', script, 'install.sh', '--claude-config-dir', 'work',
+                                     '--claude-config-dir', '/abs', '--claude-config-dir', '~/home'],
+                                    cwd=temp, text=True, capture_output=True, check=True)
+            cwd = os.path.realpath(temp)
+            self.assertEqual(result.stdout.split('\n')[:6], ['--claude-config-dir', cwd + '/work', '--claude-config-dir',
+                                                             '/abs', '--claude-config-dir', '~/home'])
+            result = subprocess.run(['/bin/bash', '-c', script, 'install.sh', '--claude-config-dir', ''],
+                                    cwd=temp, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 64)
+
+    def test_manifest_records_hook_files_and_plan_reuses_them(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            manifest = root / 'state/hook-targets.json'
+            work = root / 'work/settings.json'
+            script = str(ROOT / 'scripts/hooks.py')
+            subprocess.run(['python3', script, 'install', str(work), '/app/agent-lid-hook', 'claude',
+                            '--manifest', str(manifest)], check=True)
+            subprocess.run(['python3', script, 'install', str(work), '/app/agent-lid-hook', 'claude',
+                            '--manifest', str(manifest)], check=True)
+            self.assertEqual(hooks.read_manifest(manifest), {'claude': [str(work)], 'codex': []})
+            self.assertTrue(hooks.has_hooks(work))
+            # A later install still covers the second account without naming it again.
+            planned = hooks.plan(str(manifest), environ={'HOME': str(root / 'home')}, which=lambda name: None)
+            self.assertEqual(planned['claude'], [str(work)])
+            subprocess.run(['python3', script, 'uninstall', str(work), '--manifest', str(manifest)], check=True)
+            self.assertEqual(hooks.read_manifest(manifest), {'claude': [], 'codex': []})
+            self.assertFalse(hooks.has_hooks(work))
+            manifest.write_text('not json')
+            self.assertEqual(hooks.read_manifest(manifest), {'claude': [], 'codex': []})
+
+    def test_installer_options_exit_before_changing_anything(self):
+        script = str(ROOT / 'scripts/install.sh')
+        result = subprocess.run(['/bin/bash', script, '--help'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('--claude-config-dir', result.stdout)
+        result = subprocess.run(['/bin/bash', script, '--unknown'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 64)
+        result = subprocess.run(['/bin/bash', script, '--claude-config-dir'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 64)
+        source = (ROOT / 'scripts/install.sh').read_text()
+        self.assertLess(source.index('done\ncd "$(dirname "$0")/.."\n\nLABEL='), source.index('./scripts/build-app.sh'))
 
     def test_upgrade_keeps_live_state_and_lock_inode(self):
         with tempfile.TemporaryDirectory() as temp:

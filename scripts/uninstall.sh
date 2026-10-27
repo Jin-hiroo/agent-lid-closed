@@ -11,9 +11,20 @@ for name in AgentLidClosed ClaudeLidClosed; do
     rm -f "$HOME/Library/LaunchAgents/local.$name.plist"
 done
 
-for settings in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "${CODEX_HOME:-$HOME/.codex}/hooks.json"; do
-    if [ -f "$settings" ]; then /usr/bin/python3 scripts/hooks.py uninstall "$settings"; fi
-done
+# Every file the installer or Settings added hooks to, the default locations, and this
+# shell's CLAUDE_CONFIG_DIR and CODEX_HOME. A file that can't be fixed doesn't stop the rest.
+MANIFEST="$HOME/Library/Application Support/AgentLidClosed/hook-targets.json"
+TARGETS="$(/usr/bin/python3 scripts/hooks.py targets --manifest "$MANIFEST")"
+HOOK_FAILED=""
+while IFS= read -r settings; do
+    [ -n "$settings" ] || continue
+    if ! /usr/bin/python3 scripts/hooks.py uninstall "$settings"; then
+        echo "warning: couldn't remove the hooks from $settings; delete the entries that mention agent-lid-hook by hand." >&2
+        HOOK_FAILED=1
+    fi
+done <<<"$TARGETS"
+# Clear a "Start at Login" off choice.
+launchctl enable "gui/$(id -u)/local.AgentLidClosed" 2>/dev/null || true
 
 sudo /usr/bin/pmset -a disablesleep 0
 WAKE_HELPER=/Library/PrivilegedHelperTools/local.AgentLidClosed.wake
@@ -25,3 +36,4 @@ for name in AgentLidClosed ClaudeLidClosed; do
 done
 
 echo "Done. Logs are left in ~/Library/Logs/AgentLidClosed.log (and the legacy ClaudeLidClosed.log)."
+[ -z "$HOOK_FAILED" ] || exit 1

@@ -8,8 +8,46 @@ public enum T3Monitor {
     public struct Snapshot: Sendable {
         public var records: [SessionRecord] = []
         public var ownedSessionIDs: Set<String> = []
+        /// Conversations blocked by an account's usage limit, for account switching.
+        public var limitedThreads: [T3LimitedThread] = []
+        public var accounts: [T3Account] = []
+        /// Each account's latest reset that no later successful run has disproved.
+        /// Includes resets that passed less than `AccountSwitchPlanner.resetMargin` ago.
+        public var limitedUntil: [String: Double] = [:]
+        /// The user turned off T3's automatic continuation after usage limits, or the
+        /// accounts' limits couldn't be read. Either way, no account is switched.
+        public var continuationDisabled = false
         public var error: String?
         fileprivate var owner: ProcessIdentity?
+
+        public init() {}
+
+        /// T3 Code's server was found running.
+        public var isRunning: Bool { owner != nil }
+
+        /// Conversations whose account switch is being delivered keep the Mac awake.
+        /// Another account's earlier reset brings their wake forward.
+        public mutating func applyAccountSwitching(delivering: Set<String>,
+                                                   earlierResets: [String: AccountSwitchPlanner.EarlierReset],
+                                                   now: Double) {
+            for thread in limitedThreads {
+                let id = "t3:\(thread.threadID)"
+                if delivering.contains(thread.threadID) {
+                    var record = thread.record
+                    record.state = .working
+                    record.reason = "switching account"
+                    record.stateSince = thread.failedAt
+                    record.updatedAt = now
+                    records.removeAll { $0.sessionID == id }
+                    records.append(record)
+                } else if let earlier = earlierResets[thread.threadID],
+                          let index = records.firstIndex(where: { $0.sessionID == id && $0.reason == "usage limit" }),
+                          let reset = records[index].quotaResetAt, earlier.at < reset {
+                    records[index].quotaResetAt = earlier.at
+                    records[index].quotaAccountName = earlier.accountName
+                }
+            }
+        }
 
         public func merging(_ hooks: SessionStore.Contents) -> SessionStore.Contents {
             var result = hooks
@@ -41,9 +79,16 @@ public enum T3Monitor {
                 lastGoodAt = now
                 return current
             }
-            guard let lastGood, current.owner != nil, current.owner == lastGood.owner,
-                  now >= lastGoodAt, now - lastGoodAt < 60 else { return current }
+            guard let lastGood, current.owner != nil, current.owner == lastGood.owner else { return current }
+            if now < lastGoodAt || now - lastGoodAt >= 60 {
+                // Activity expires, but known T3-owned IDs remain authoritative
+                // for this live host. Otherwise stale hooks could re-arm waits.
+                var failed = current
+                failed.ownedSessionIDs.formUnion(lastGood.ownedSessionIDs)
+                return failed
+            }
             var cached = lastGood
+            cached.ownedSessionIDs.formUnion(current.ownedSessionIDs)
             cached.error = current.error
             return cached
         }
@@ -75,6 +120,10 @@ public enum T3Monitor {
               let owner = identity(runtime.pid), started >= owner.startTime - 1,
               started - owner.startTime < 120 else { return snapshot }
         snapshot.owner = owner
+        let settings = settings(directory: directory)
+        let accountNames = accountNames(settings.providerInstances)
+        snapshot.accounts = accounts(settings)
+        snapshot.continuationDisabled = settings.autoResumeLimitedThreads == false
 
         var database: OpaquePointer?
         // Never create a missing DB, change its schema, or write T3 state. Opening
@@ -88,10 +137,20 @@ public enum T3Monitor {
         }
         defer { sqlite3_close(database) }
         sqlite3_busy_timeout(database, 50)
+        var ownershipLoaded = false
         do {
             // All metadata comes from one commit while T3 continues to write.
             try execute(database, "BEGIN")
             defer { try? execute(database, "ROLLBACK") }
+            // Ownership is independent of activity. Settling, archiving, opting
+            // out, or finishing must not let a T3 provider fall back to its hooks.
+            // merging() still preserves live hooks from independent terminals.
+            try rows(database, ownershipSQL) { row in
+                guard let nativeID = string(row, 0), !nativeID.isEmpty,
+                      let provider = provider(string(row, 1)) else { return }
+                snapshot.ownedSessionIDs.insert(provider.sessionKey(nativeID))
+            }
+            ownershipLoaded = true
             try rows(database, activitySQL, now: now) { row in
                 guard let threadID = string(row, 0), let status = string(row, 1),
                       let provider = provider(string(row, 2)),
@@ -101,8 +160,9 @@ public enum T3Monitor {
                     reason: "T3 Code", notified: true, stateSince: since,
                     updatedAt: timestamp(string(row, 17)) ?? since,
                     pid: owner.pid, pidStart: owner.startTime, cwd: string(row, 4), provider: provider)
+                record.providerInstanceID = string(row, 20)
+                record.accountName = record.providerInstanceID.flatMap { accountNames[$0] }
                 let backgroundActivity = timestamp(string(row, 18))
-                let nativeID = string(row, 19).map(provider.sessionKey)
                 if (sqlite3_column_int(row, 15) > 0 || backgroundActivity != nil)
                     && !["preparing", "starting", "running"].contains(status) {
                     var background = record
@@ -111,7 +171,6 @@ public enum T3Monitor {
                     background.reason = "T3 background tasks"
                     background.updatedAt = max(timestamp(string(row, 16)) ?? since, backgroundActivity ?? since)
                     snapshot.records.append(background)
-                    if let nativeID { snapshot.ownedSessionIDs.insert(nativeID) }
                 }
                 if pendingInput {
                     record.state = .waiting
@@ -119,6 +178,23 @@ public enum T3Monitor {
                     record.stateSince = timestamp(string(row, 14)) ?? since
                     record.updatedAt = record.stateSince
                 } else if status == "failed" {
+                    // The same conditions T3 applies before continuing a limited run:
+                    // the conversation still uses the failed account and no later
+                    // error from that account superseded the limit.
+                    if string(row, 6) == "usage_limit", let reset = timestamp(string(row, 7)), reset > since,
+                       sqlite3_column_int(row, 12) != 0,
+                       string(row, 21).map({ $0 == string(row, 22) }) ?? true,
+                       let runID = string(row, 10), let instance = string(row, 20),
+                       let selection = string(row, 23) {
+                        let armed = string(row, 9) == runID && sqlite3_column_type(row, 25) != SQLITE_NULL
+                        snapshot.limitedThreads.append(T3LimitedThread(
+                            threadID: threadID, runID: runID, projectID: string(row, 26), accountID: instance,
+                            failedAt: since, resetAt: reset,
+                            snoozedUntil: timestamp(string(row, 13)),
+                            autoResume: armed ? sqlite3_column_int(row, 25) != 0 : nil,
+                            isDelegated: string(row, 24) == "subagent",
+                            modelSelection: selection, record: record))
+                    }
                     // Only a recovery durably armed for this exact failed run and
                     // reset can schedule a wake. Explicit opt-outs are respected.
                     guard string(row, 6) == "usage_limit", let reset = timestamp(string(row, 7)),
@@ -126,6 +202,9 @@ public enum T3Monitor {
                           string(row, 9) == string(row, 10),
                           let recoveryReset = timestamp(string(row, 11)), recoveryReset == reset,
                           sqlite3_column_int(row, 12) != 0 else { return }
+                    // T3 rejects a quota recovery superseded by a different error
+                    // from the session bound to this particular account.
+                    if let sessionError = string(row, 21), sessionError != string(row, 22) { return }
                     let snoozed = timestamp(string(row, 13)) ?? 0
                     record.state = .waiting
                     record.reason = "usage limit"
@@ -139,15 +218,34 @@ public enum T3Monitor {
                     record.updatedAt = since
                 }
                 snapshot.records.append(record)
-                if let nativeID { snapshot.ownedSessionIDs.insert(nativeID) }
+            }
+            // An account stays limited until its reset, unless a run started after
+            // the failure has since completed on it. Unknown limits stop switching
+            // rather than the activity this monitor reports.
+            do {
+                var provenAt: [String: Double] = [:]
+                try rows(database, provenAccountsSQL) { row in
+                    guard let instance = string(row, 0), sqlite3_column_type(row, 1) != SQLITE_NULL else { return }
+                    provenAt[instance] = sqlite3_column_double(row, 1)
+                }
+                try rows(database, limitedAccountsSQL, now: now) { row in
+                    guard let instance = string(row, 0), let reset = timestamp(string(row, 1)),
+                          reset + AccountSwitchPlanner.resetMargin > now,
+                          let failedAt = timestamp(string(row, 2)), failedAt > provenAt[instance] ?? -.infinity else { return }
+                    snapshot.limitedUntil[instance] = max(snapshot.limitedUntil[instance] ?? reset, reset)
+                }
+            } catch {
+                snapshot.limitedUntil = [:]
+                snapshot.continuationDisabled = true
             }
             return snapshot
         } catch {
-            // An unsupported schema or interrupted read cannot leave a partial
-            // snapshot suppressing the independently functioning hook adapter.
+            // Discard partial activity. Independently loaded ownership remains
+            // valid, preventing settled T3 work from reappearing through hooks.
             var failed = Snapshot()
             failed.error = "T3 activity unavailable: database busy or unsupported schema"
             failed.owner = owner
+            if ownershipLoaded { failed.ownedSessionIDs = snapshot.ownedSessionIDs }
             return failed
         }
     }
@@ -158,6 +256,124 @@ public enum T3Monitor {
         case "claudeAgent": .claude
         default: nil
         }
+    }
+
+    private struct Settings: Decodable {
+        /// Every field is optional so that one unusual instance can't hide the others.
+        struct Instance: Decodable {
+            var driver: String?
+            var displayName: String?
+            var enabled: Bool?
+            var customModels: Set<String> = []
+
+            private enum CodingKeys: String, CodingKey { case driver, displayName, enabled, config }
+            private enum ConfigKeys: String, CodingKey { case customModels, enabled }
+            /// A legacy bare slug or a full entry.
+            private struct Model: Decodable {
+                var slug: String?
+                private enum Keys: String, CodingKey { case slug }
+                init(from decoder: Decoder) throws {
+                    slug = (try? decoder.singleValueContainer().decode(String.self))
+                        ?? (try? decoder.container(keyedBy: Keys.self).decode(String.self, forKey: .slug))
+                }
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                driver = try? container.decode(String.self, forKey: .driver)
+                displayName = try? container.decode(String.self, forKey: .displayName)
+                let config = try? container.nestedContainer(keyedBy: ConfigKeys.self, forKey: .config)
+                let models = (try? config?.decode([Model].self, forKey: .customModels)) ?? []
+                customModels = Set(models.compactMap(\.slug))
+                // As T3 resolves it: a false on the envelope or the legacy config flag wins.
+                let envelope = try? container.decode(Bool.self, forKey: .enabled)
+                let legacy = try? config?.decode(Bool.self, forKey: .enabled)
+                enabled = envelope == false || legacy == false ? false : envelope ?? legacy
+            }
+        }
+        /// Unreadable entries decode as empty instead of failing the whole map.
+        private struct ProjectOverride: Decodable {
+            struct Instance: Decodable {
+                var enabled: Bool?
+                private enum Keys: String, CodingKey { case enabled }
+                init(from decoder: Decoder) throws {
+                    enabled = try? decoder.container(keyedBy: Keys.self).decode(Bool.self, forKey: .enabled)
+                }
+            }
+            var providerInstances: [String: Instance] = [:]
+            private enum Keys: String, CodingKey { case providerInstances }
+            init(from decoder: Decoder) throws {
+                providerInstances = (try? decoder.container(keyedBy: Keys.self)
+                    .decode([String: Instance].self, forKey: .providerInstances)) ?? [:]
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case providerInstances, projectSettingsOverrides, autoResumeLimitedThreads
+        }
+
+        var providerInstances: [String: Instance] = [:]
+        /// Project ID, then instance ID.
+        var projectEnabled: [String: [String: Bool]] = [:]
+        var autoResumeLimitedThreads: Bool?
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            providerInstances = (try? container.decode([String: Instance].self, forKey: .providerInstances)) ?? [:]
+            let overrides = (try? container.decode([String: ProjectOverride].self, forKey: .projectSettingsOverrides)) ?? [:]
+            projectEnabled = overrides.mapValues { $0.providerInstances.compactMapValues(\.enabled) }
+            autoResumeLimitedThreads = try? container.decode(Bool.self, forKey: .autoResumeLimitedThreads)
+        }
+    }
+
+    /// T3's accounts and its usage-limit continuation choice, read from its settings
+    /// even when T3 isn't running. Nil when T3 Code isn't installed.
+    public static func configuration(directory: URL = defaultDirectory)
+        -> (accounts: [T3Account], continuationDisabled: Bool)? {
+        guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("settings.json").path) else {
+            return nil
+        }
+        let settings = settings(directory: directory)
+        return (accounts(settings), settings.autoResumeLimitedThreads == false)
+    }
+
+    private static func settings(directory: URL) -> Settings {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("settings.json")),
+              let settings = try? JSONDecoder().decode(Settings.self, from: data) else { return Settings() }
+        return settings
+    }
+
+    private static func accountNames(_ instances: [String: Settings.Instance]) -> [String: String] {
+        instances.reduce(into: [:]) { names, entry in
+            guard let provider = provider(entry.value.driver),
+                  let name = entry.value.displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else { return }
+            names[entry.key] = name.localizedCaseInsensitiveContains(provider.name)
+                ? name : "\(provider.name) (\(name))"
+        }
+    }
+
+    /// T3's built-in instance for each tool is named after its driver and exists
+    /// even when settings don't mention it.
+    private static func accounts(_ settings: Settings) -> [T3Account] {
+        let instances = settings.providerInstances
+        let names = accountNames(instances)
+        func projectEnabled(_ id: String) -> [String: Bool] {
+            settings.projectEnabled.compactMapValues { $0[id] }
+        }
+        var accounts = instances.compactMap { id, instance -> T3Account? in
+            guard let driver = instance.driver, let provider = provider(driver) else { return nil }
+            return T3Account(id: id, driver: driver, name: names[id] ?? provider.name,
+                             enabled: instance.enabled ?? true, projectEnabled: projectEnabled(id),
+                             customModels: instance.customModels)
+        }
+        for (driver, provider) in [("claudeAgent", AgentProvider.claude), ("codex", .codex)]
+        where instances[driver] == nil {
+            accounts.append(T3Account(id: driver, driver: driver, name: provider.name,
+                                      projectEnabled: projectEnabled(driver), configured: false))
+        }
+        return accounts.sorted { $0.id < $1.id }
     }
 
     private static func timestamp(_ value: String?) -> Double? {
@@ -206,9 +422,54 @@ public enum T3Monitor {
            AND work_run.status IS NOT 'rolled_back')
         """
 
+    private static let ownershipSQL = """
+        SELECT json_extract(payload_json, '$.nativeThreadRef.nativeId'), driver
+        FROM orchestration_v2_projection_provider_threads
+        WHERE driver IN ('codex', 'claudeAgent')
+        """
+
+    /// Usage-limit failures of any conversation, by account, whose reset is ahead or just passed.
+    private static let limitedAccountsSQL = """
+        SELECT r.provider_instance_id, json_extract(item.payload_json, '$.failure.resetAt'),
+          COALESCE(r.completed_at, item.updated_at)
+        FROM orchestration_v2_projection_runs r
+        JOIN orchestration_v2_projection_turn_items item ON item.turn_item_id = (
+          SELECT error.turn_item_id FROM orchestration_v2_projection_turn_items error
+          WHERE error.thread_id = r.thread_id AND error.run_id = r.run_id
+            AND error.type = 'error' AND error.status = 'failed'
+            AND error.node_id IS json_extract(r.payload_json, '$.rootNodeId')
+          ORDER BY error.updated_at DESC, error.ordinal DESC, error.turn_item_id DESC LIMIT 1
+        )
+        WHERE r.status = 'failed' AND r.provider_instance_id IS NOT NULL
+          AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
+          AND (julianday(json_extract(item.payload_json, '$.failure.resetAt')) - 2440587.5) * 86400 > ?1 - 600
+        """
+
+    /// The latest start of a run that went on to complete, by account.
+    private static let provenAccountsSQL = """
+        SELECT provider_instance_id,
+          (MAX(julianday(COALESCE(json_extract(payload_json, '$.startedAt'), requested_at))) - 2440587.5) * 86400
+        FROM orchestration_v2_projection_runs
+        WHERE status = 'completed' AND provider_instance_id IS NOT NULL
+        GROUP BY provider_instance_id
+        """
+
     // Match T3's latestExecutedRun ordering and root failure selection. A queued
     // or never-started cancelled run cannot hide the actual last execution.
     private static let activitySQL = """
+        WITH RECURSIVE edges(child, parent) AS MATERIALIZED (
+          -- Text affinity lets SQLite index the materialized parent links.
+          SELECT thread_id, CAST(json_extract(payload_json, '$.lineage.parentThreadId') AS TEXT)
+          FROM orchestration_v2_projection_threads
+          WHERE json_extract(payload_json, '$.lineage.relationshipToParent') = 'subagent'
+            AND json_extract(payload_json, '$.settledOverride') IS NOT 'active'
+        ), retired(thread_id) AS (
+          SELECT thread_id FROM orchestration_v2_projection_threads
+          WHERE thread_id IS NOT NULL AND (deleted_at IS NOT NULL OR archived_at IS NOT NULL
+            OR json_extract(payload_json, '$.settledOverride') = 'settled')
+          UNION
+          SELECT edges.child FROM edges JOIN retired ON retired.thread_id = edges.parent
+        )
         SELECT t.thread_id, r.status, pt.driver,
           COALESCE(r.completed_at, json_extract(r.payload_json, '$.startedAt'), r.requested_at),
           COALESCE(json_extract(t.payload_json, '$.worktreePath'), p.workspace_root),
@@ -236,7 +497,19 @@ public enum T3Monitor {
                         WHERE progress.thread_id = t.thread_id AND progress.run_id = r.run_id), r.requested_at),
               COALESCE(json_extract(r.payload_json, '$.startedAt'), r.requested_at)),
           \(backgroundActivitySQL),
-          json_extract(pt.payload_json, '$.nativeThreadRef.nativeId')
+          json_extract(pt.payload_json, '$.nativeThreadRef.nativeId'),
+          r.provider_instance_id,
+          (SELECT json_extract(session.payload_json, '$.lastError')
+           FROM orchestration_v2_projection_provider_session_bindings binding
+           JOIN orchestration_v2_projection_provider_sessions session
+             ON session.provider_session_id = binding.provider_session_id
+           WHERE binding.thread_id = t.thread_id AND session.provider_instance_id = t.provider_instance_id
+           ORDER BY session.updated_at DESC, session.provider_session_id DESC LIMIT 1),
+          json_extract(item.payload_json, '$.failure.message'),
+          json_extract(t.payload_json, '$.modelSelection'),
+          json_extract(t.payload_json, '$.lineage.relationshipToParent'),
+          json_extract(t.payload_json, '$.limitRecovery.autoResume'),
+          t.project_id
         FROM orchestration_v2_projection_threads t
         JOIN orchestration_v2_projection_runs r ON r.run_id = (
           SELECT latest.run_id FROM orchestration_v2_projection_runs latest
@@ -256,14 +529,11 @@ public enum T3Monitor {
         )
         WHERE t.deleted_at IS NULL AND t.archived_at IS NULL
           AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
-          -- A finished or limited delegated task whose parent the user has settled is not
-          -- theirs to wait for: its wake and hold would only keep the Mac awake for nothing.
-          AND NOT (r.status NOT IN ('preparing', 'starting', 'running')
-                   AND json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
-                   AND EXISTS (SELECT 1 FROM orchestration_v2_projection_threads parent
-                               WHERE parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
-                                 AND (json_extract(parent.payload_json, '$.settledOverride') = 'settled'
-                                      OR parent.archived_at IS NOT NULL OR parent.deleted_at IS NOT NULL)))
+          -- Honor ancestor retirement in this app's wake tracking. T3's native
+          -- recovery worker checks each thread's own settlement separately.
+          -- A genuinely running or explicitly reopened child still needs power.
+          AND (r.status IN ('preparing', 'starting', 'running')
+               OR NOT EXISTS (SELECT 1 FROM retired WHERE retired.thread_id = t.thread_id))
           AND (r.status IN ('preparing', 'starting', 'running', 'waiting', 'failed')
                OR (r.status IN ('completed', 'cancelled', 'interrupted')
                    AND ((julianday(r.completed_at) - 2440587.5) * 86400 > ?1 - 120
