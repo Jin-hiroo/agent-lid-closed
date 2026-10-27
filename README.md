@@ -1,31 +1,60 @@
 # Agent Lid Closed
 
-**Close your MacBook's lid while Claude Code or Codex works. Your Mac stays awake with the screen at 0% brightness, then sleeps when every agent is waiting for you.**
+**Close your MacBook's lid while Claude Code, Codex or T3 Code works. Your Mac stays awake with the screen off, then sleeps when every agent is waiting for you.**
 
+[![Latest release](https://img.shields.io/github/v/release/Jin-hiroo/agent-lid-closed)](https://github.com/Jin-hiroo/agent-lid-closed/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Requires macOS 14 or later](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#install)
 [![Builds with Swift 6.2 or later](https://img.shields.io/badge/Swift-6.2%2B-F05138?logo=swift&logoColor=white)](Package.swift)
-[![Claude Code and Codex](https://img.shields.io/badge/agents-Claude%20Code%20%2B%20Codex-417E68)](#usage)
+[![Claude Code, Codex and T3 Code](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20T3%20Code-417E68)](#which-apps-are-tracked)
 
-[Install](#install) · [Update](#updating) · [Usage](#usage) · [How it works](#how-it-works) · [Settings](#settings) · [Limits](#limits)
+[Install with AI](#tldr-install-with-an-ai-agent) · [Install](#install) · [Update](#updating) · [Usage](#usage) · [How it works](#how-it-works) · [Settings](#settings) · [Limits](#limits)
 
 <p>
-  <a href="docs/images/menu-lid-closed-working.png"><img src="docs/images/menu-lid-closed-working.png" alt="Earlier Claude Lid Closed release: the cup menu reports lid closed, system sleep disabled, and two Claude Code sessions working." width="398"></a>
+  <a href="docs/images/menu.png"><img src="docs/images/menu.png" alt="The Agent Lid Closed menu with the lid closed: it is keeping the Mac awake with the display off while a Codex session and a Claude session are working." width="368"></a>
 </p>
 
-_Real screenshot from the earlier Claude-only release. The current menu also labels each session as Claude or Codex and includes a display dimming switch._
+_The menu with the lid closed: a Codex and a Claude session are working, so the Mac stays awake with the display off._
+
+## TL;DR: install with an AI agent
+
+Paste this into Claude Code, Codex or T3 Code:
+
+```text
+Install Agent Lid Closed from https://github.com/Jin-hiroo/agent-lid-closed.
+Clone it to ~/dev/agent-lid-closed, or run `git pull` there if it already exists.
+Read README.md and scripts/install.sh, check that `swift --version` is 6.2 or later,
+and tell me in a few lines what the installer will change on this Mac.
+Don't run the installer yourself: it asks for my administrator password.
+Give me the exact command to run in Terminal instead.
+When I say it's done, run
+~/Applications/AgentLidClosed.app/Contents/Helpers/agent-lid-hook status
+and tell me whether Claude Code, Codex and T3 Code are set up.
+```
+
+**Notes for the agent**
+
+- Requirements: macOS 14 or later, and the Command Line Tools with Swift 6.2 or later. If they're missing, the user runs `xcode-select --install`.
+- Install and update: `cd ~/dev/agent-lid-closed && git pull && ./scripts/install.sh`, run by the user in Terminal, because `sudo` asks for their password once.
+- The installer adds hooks only for the tools it finds. For a second Claude account, add `--claude-config-dir <folder>`; to skip a tool, add `--no-claude` or `--no-codex`. See [Install](#install).
+- Don't edit the hooks in `~/.claude/settings.json` or `~/.codex/hooks.json` by hand. Use the installer or **Settings › Integrations**.
+- After installing, the user restarts open Claude Code sessions, and in Codex trusts the new hooks under `/hooks`.
+- Check: `agent-lid-hook status` (path above) lists sessions. A cup icon in the menu bar means an agent is working.
+- Remove everything: `./scripts/uninstall.sh`, also run by the user.
 
 ## Overview
 
-Closing a MacBook's lid normally puts it to sleep even while `caffeinate` is running. Agent Lid Closed follows Claude Code and Codex lifecycle hooks, keeping the Mac awake while either tool has work to do.
+Closing a MacBook's lid normally puts it to sleep even while `caffeinate` is running. Agent Lid Closed follows Claude Code and Codex lifecycle hooks, and T3 Code's own conversation state, keeping the Mac awake while any of them has work to do.
 
-- **Both tools, together.** Claude and Codex sessions share one sleep decision. The Mac stays awake while any tracked session is working, including tracked subagents. T3 Code conversations are tracked directly, including hosts whose provider hooks are unavailable.
+- **Works with what you have.** Use Claude Code, Codex, T3 Code, or any mix of them. The installer sets up only the tools it finds, and one account per tool is fine. Extra Claude accounts and a second tool can be added later from Settings.
+- **All tools, together.** Claude and Codex sessions share one sleep decision. The Mac stays awake while any tracked session is working, including tracked subagents. T3 Code conversations are tracked directly, including hosts whose provider hooks are unavailable.
 - **Screen at 0% with the lid closed.** The app turns the built-in backlight off while keeping a closed Mac awake, then restores the previous brightness when you open the lid.
 - **Sleep when turns finish.** Finished turns and input questions allow sleep once every session is waiting and its grace period has passed. Claude approval prompts also allow sleep; Codex approval requests keep the hold until the tool finishes or you interrupt.
 - **Wake before either tool's usage resets.** When Claude or Codex hits a known subscription limit, schedule a wake two minutes before the earliest reset. Both tools share the same sleep decision and wake alarm.
 - **Switch accounts at a usage limit.** With two Claude (or Codex) accounts in T3 Code, a conversation that hits one account's limit continues on the other right away, instead of waiting for the reset.
 - **Claude notifications still go out.** Claude sessions wait for Claude Code's delayed input notification. Codex sessions use the normal 10 s grace period without that extra wait.
-- **See who is working.** Each menu row and terminal status line identifies the tool, project and activity.
+- **See who is working.** Each menu row and terminal status line identifies the tool or account, project and activity.
+- **Settings in one window.** Change sleep timing, the battery level, start at login and usage-limit behavior, and add or remove hooks, without editing files.
 - **Battery and heat limits.** At 15% battery or less on battery power, or serious thermal pressure, the app releases its sleep hold. Quitting restores sleep and brightness; launchd restarts the app after a crash to recover its saved state.
 - **Small hooks, narrow access.** Event hooks write local state and produce no stdout. Root access permits the two `pmset disablesleep` settings and a root-owned helper that can only manage this app's wake alarms within the next seven days.
 
@@ -96,9 +125,22 @@ Codex · agent-lid-closed  working  (3 min)  codex:thread-id
 => keep the Mac awake
 ```
 
+### Which apps are tracked
+
+| App | Kept awake while working | Wake before usage resets | Switch accounts at a limit |
+| --- | --- | --- | --- |
+| Claude Code in a terminal | Yes, through its hooks | Yes, with Claude Code 2.1.234 or later | No |
+| Codex CLI | Yes, once you trust its hooks in `/hooks` | Yes, from its local event log | No |
+| T3 Code, with Claude or Codex | Yes, read directly; no hooks needed | Yes, and T3 continues the conversation | Yes, with two accounts of one tool |
+| Claude desktop app, Code tab (local sessions) | Expected, not yet confirmed | Not yet confirmed | No |
+| Claude desktop app, Chat and Cowork | No: they run in the cloud or in a VM | No | No |
+| Cloud sessions, such as Claude Code on the web | No | No | No |
+
+The Claude desktop app's Code tab runs its own copy of Claude Code, which for normal sessions loads your user settings, where the installer puts the hooks. Its local sessions should therefore appear in the menu like terminal ones, but that hasn't been confirmed. If you try it, please [open an issue](https://github.com/Jin-hiroo/agent-lid-closed/issues) with the result.
+
 ### Wake when Claude or Codex limits reset
 
-Leave the tracked sessions open, with hooks enabled. **Wake for Usage Resets** is enabled in this app's menu by default; Automatic Mode must also be on. The Mac stays awake while either provider is working. It can sleep when both are waiting, then wakes two minutes before the earliest known reset. If the first session exits or cancels its wait, the other session's wake is retained.
+Leave the tracked sessions open, with hooks enabled. **Wake for Usage Resets** is on by default, in the menu and in **Settings › Usage Limits**; Automatic Mode must also be on. The Mac stays awake while either provider is working. It can sleep when both are waiting, then wakes two minutes before the earliest known reset. If the first session exits or cancels its wait, the other session's wake is retained.
 
 **Claude Code:** use **2.1.234 or later** with a Pro or Max subscription. The status-line wrapper records Claude's documented `rate_limits.five_hour` and `seven_day` percentages and reset timestamps locally. A `StopFailure` hook with `error: "rate_limit"` arms the wait. Keep **Continue automatically at usage limit** enabled in Claude's `/config` so the existing session continues after the reset.
 
@@ -120,6 +162,10 @@ Pause, disabling the wake toggle, session exit, continuation, reported cancellat
 
 If T3 Code has more than one account of the same tool, such as **Claude** and **Claude - Second**, a conversation that hits one account's usage limit moves to another account and continues right away. It's optional: without T3 Code, or with one account per tool, nothing changes. **Settings › Usage Limits** shows the accounts it would use and turns it on or off; it's on by default, and the menu shows the same switch when it applies. It works independently of Automatic Mode.
 
+<p>
+  <img src="docs/images/settings-usage-limits.png" alt="Settings, Usage Limits tab: Wake the Mac before usage resets is on, and Switch to another account at a usage limit is on, listing the Claude accounts Claude and Claude - Second." width="560">
+</p>
+
 The app sends T3 the same command as selecting the other account and pressing Resume: one `message.dispatch` that switches the conversation and starts the turn together, with the message "Continue where you left off. Claude reached its usage limit, so Agent Lid Closed moved this conversation to Claude - Second." T3 hands the conversation's context to the new account and keeps its permission mode. If T3 refuses the command, nothing changes and the conversation waits for its own reset as before.
 
 - **Which conversations.** The failure must be a usage limit with a known reset, and the conversation must still use the limited account. A conversation moves if T3 has armed its automatic continuation or the failure is under 15 minutes old. Conversations you snoozed, opted out of automatic continuation, settled or archived stay put, as do those waiting for your input and delegated child tasks (their parent decides). Turning off automatic continuation in T3's usage-limit settings turns switching off too.
@@ -133,12 +179,18 @@ The app sends T3 the same command as selecting the other account and pressing Re
 The app uses the system-wide `SleepDisabled` setting (`pmset disablesleep`) to prevent lid-closed sleep. Hooks and T3's native orchestration state report activity; they do not change power settings themselves.
 
 ```text
-Claude Code ── hooks ──▶ agent-lid-hook                  ──┐
-Codex       ── hooks ──▶ agent-lid-hook --provider codex ──┤
-                                                         ▼
-                    sessions/<session key>.json ◀── menu bar app watches
-                                                         ├─ sleep disabled while any agent works
-                                                         └─ built-in brightness 0% with lid closed
+Claude Code ── hooks ──▶ agent-lid-hook ──────────────────┐
+Codex       ── hooks ──▶ agent-lid-hook --provider codex ─┤
+                                                          ▼
+                                             sessions/<session key>.json
+                                                          │
+T3 Code     ── read-only database, every 5 s ─────────────┤
+                                                          ▼
+                                                    menu bar app
+                                                     ├─ keeps sleep off while an agent works
+                                                     ├─ turns the display off with the lid closed
+                                                     ├─ wakes the Mac before usage resets
+                                                     └─ switches T3 accounts at a usage limit
 ```
 
 Session files are in `~/Library/Application Support/AgentLidClosed/sessions/`. Codex IDs are namespaced separately from Claude IDs. Records written by the old Claude-only version still load.
@@ -175,6 +227,10 @@ The menu lists each session's tool, project and activity, plus lid state, system
 
 Choose **Settings…** (⌘,) from the menu. Changes take effect within 5 s.
 
+<p>
+  <img src="docs/images/settings-integrations.png" alt="Settings, Integrations tab: Claude Code hooks added in ~/.claude/settings.json with a Remove button and an Add Config Folder for Another Account button; Codex not found, with an Add button; T3 Code conversations tracked directly." width="560">
+</p>
+
 | Tab | What you can change |
 | --- | --- |
 | General | Automatic Mode, display off with the lid closed, start at login, and the battery level that allows sleep |
@@ -205,7 +261,7 @@ The same preferences can be scripted with `defaults write local.AgentLidClosed <
 - **Hooks that continue a turn.** Another `Stop` or `SubagentStop` hook can request more work after this app has recorded completion. Until the next activity hook, the session may count as waiting. Increase the grace period or turn off Automatic Mode for long continuation-only workflows.
 - **Manual sleep.** macOS may ignore manual sleep while the hold is active. Turn off Automatic Mode or quit first.
 - **Private brightness API.** Apple silicon brightness control uses `DisplayServices`. If a future macOS removes that API, dimming is skipped and a failure is logged.
-- **Other hosts and remote work.** Only hosts that load and run the configured local hooks are visible. Cloud sessions and hosts that skip hooks are not tracked; a running process alone does not imply an active turn.
+- **Other hosts and remote work.** Only hosts that load and run the configured local hooks are visible, plus T3 Code. Cloud sessions, the Claude desktop app's Chat and Cowork, and hosts that skip hooks are not tracked; a running process alone does not imply an active turn. See [Which apps are tracked](#which-apps-are-tracked).
 
 ## Development
 
