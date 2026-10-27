@@ -8,7 +8,7 @@ struct AgentLidClosedApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(controller: appDelegate.controller)
+            MenuContent(controller: appDelegate.controller, openSettings: appDelegate.showSettings)
         } label: {
             MenuBarIcon(controller: appDelegate.controller)
         }
@@ -19,6 +19,21 @@ struct AgentLidClosedApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let controller = Controller()
+    private var settingsWindow: NSWindow?
+
+    /// A plain AppKit window: a menu bar app can't reliably bring SwiftUI's Settings scene forward.
+    func showSettings() {
+        if settingsWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(controller: controller)))
+            window.title = "Agent Lid Closed Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Two copies would fight over the same system setting.
@@ -31,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         controller.start()
+        // For screenshots and UI checks of a dry-run copy.
+        if Power.dryRun, ProcessInfo.processInfo.environment["AGENT_LID_OPEN_SETTINGS"] == "1" { showSettings() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -48,6 +65,7 @@ struct MenuBarIcon: View {
 
 struct MenuContent: View {
     let controller: Controller
+    let openSettings: () -> Void
 
     var body: some View {
         Text(controller.headline)
@@ -57,7 +75,7 @@ struct MenuContent: View {
             Text("No agent sessions")
         } else {
             ForEach(controller.evaluation.sessions) { session in
-                Text("\(session.provider.name) · \(session.project): \(session.label) · \(Self.age(session.since))")
+                Text("\(session.accountName) · \(session.project): \(session.label) · \(Self.age(session.since))")
             }
         }
         Divider()
@@ -67,6 +85,13 @@ struct MenuContent: View {
                                                                  set: { controller.setDimEnabled($0) }))
         Toggle("Wake for Usage Resets", isOn: Binding(get: { controller.wakeEnabled },
                                                     set: { controller.setWakeEnabled($0) }))
+        if controller.switchAvailable {
+            Toggle("Switch Accounts at Usage Limits", isOn: Binding(get: { controller.switchEnabled },
+                                                                  set: { controller.setSwitchEnabled($0) }))
+        }
+        Divider()
+        Button("Settings…", action: openSettings)
+            .keyboardShortcut(",")
         Button("Open Log") { NSWorkspace.shared.open(Paths.logFile) }
         Divider()
         Button("Quit (restores normal sleep)") { NSApp.terminate(nil) }

@@ -204,7 +204,7 @@ enum Power {
             .takeRetainedValue() as? Bool
     }
 
-    private static func run(_ path: String, _ arguments: [String]) -> (status: Int32, output: String) {
+    static func run(_ path: String, _ arguments: [String]) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments

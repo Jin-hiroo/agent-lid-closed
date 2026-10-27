@@ -15,6 +15,9 @@ public enum Paths {
 
     public static var sessionsDir: URL { stateDir.appendingPathComponent("sessions", isDirectory: true) }
 
+    /// Every settings file that has the hooks, written by `scripts/hooks.py`.
+    public static var hookManifest: URL { stateDir.appendingPathComponent("hook-targets.json") }
+
     /// Exists while the app has sleep disabled, so a crashed app can undo it on its next launch.
     public static var holdMarker: URL { stateDir.appendingPathComponent("holding") }
 
@@ -27,6 +30,9 @@ public enum Paths {
         }
         return home.appendingPathComponent("Library/Logs/AgentLidClosed.log")
     }
+
+    /// The state folder is a test folder, set with AGENT_LID_STATE_DIR.
+    public static var hasTestState: Bool { stateOverride != nil }
 
     private static var stateOverride: String? {
         let env = ProcessInfo.processInfo.environment

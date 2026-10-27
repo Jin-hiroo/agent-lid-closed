@@ -13,6 +13,7 @@ public struct SessionSnapshot: Identifiable, Sendable, Equatable {
     public let id: String
     public let project: String
     public let provider: AgentProvider
+    public let accountName: String
     public let activity: Activity
     /// When the session entered its current activity.
     public let since: Date
@@ -116,7 +117,8 @@ public enum Evaluator {
         }
 
         let project = record.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } ?? AgentProvider.shortSessionID(record.sessionID)
-        return SessionSnapshot(id: record.sessionID, project: project, provider: record.client, activity: activity,
+        return SessionSnapshot(id: record.sessionID, project: project, provider: record.client,
+                               accountName: record.displayName, activity: activity,
                                since: Date(timeIntervalSince1970: since), keepsAwake: keepsAwake,
                                sleepAllowedAt: sleepAllowedAt)
     }

@@ -244,4 +244,136 @@ for args in [["clear", "extra"], ["set", "2000000600", "extra"], ["set", "+20000
              ["set", "99999999999999999999999999999999"], ["shutdown"], ["set", "2000000600;id"]] {
     check(WakeRequest.parse(args, now: now) == nil, "helper rejects malformed, past and out-of-range arguments")
 }
-print("PASS \(checks) quota planning, lifecycle and privileged-argument checks")
+
+// Account switching: another account of the same tool continues a limited conversation.
+let main = T3Account(id: "claudeAgent", driver: "claudeAgent", name: "Claude")
+let second = T3Account(id: "claudeAgent_second", driver: "claudeAgent", name: "Claude - Second")
+let chatGPT = T3Account(id: "codex-personal", driver: "codex", name: "Codex")
+let selection = #"{"instanceId":"claudeAgent","model":"claude-opus-5-5","options":[{"id":"effort","value":"xhigh"}]}"#
+var threadRecord = try record()
+threadRecord.sessionID = "t3:thread"
+threadRecord.cwd = "/tmp/project"
+@MainActor func limited(failedAt: Double = now - 30, reset: Double = now + 3600, autoResume: Bool? = nil,
+             snoozedUntil: Double? = nil, delegated: Bool = false, account: String = "claudeAgent",
+             selection: String = selection) -> T3LimitedThread {
+    T3LimitedThread(threadID: "thread", runID: "run-1", accountID: account, failedAt: failedAt, resetAt: reset,
+                    snoozedUntil: snoozedUntil, autoResume: autoResume, isDelegated: delegated,
+                    modelSelection: selection, record: threadRecord)
+}
+@MainActor func switchPlan(_ threads: [T3LimitedThread], _ accounts: [T3Account] = [main, second, chatGPT],
+                limited: [String: Double] = ["claudeAgent": now + 3600], at date: Double = now) -> AccountSwitchPlanner.Plan {
+    AccountSwitchPlanner.plan(threads: threads, accounts: accounts, limitedUntil: limited, now: date)
+}
+var moved = switchPlan([limited()])
+check(moved.switches.map(\.to.id) == ["claudeAgent_second"], "switch to the other account of the same tool")
+check(moved.switches.first?.project == "project", "switch names the project")
+let command = try JSONSerialization.jsonObject(with: moved.switches[0].command) as! [String: Any]
+let movedSelection = command["modelSelection"] as! [String: Any]
+check(command["type"] as? String == "message.dispatch" && command["manualContinuationOfRunId"] as? String == "run-1",
+      "continue the limited run as T3's Resume does")
+check(command["commandId"] as? String == "agent-lid-account-switch:thread:run-1"
+      && command["messageId"] as? String == command["commandId"] as? String, "stable IDs make redelivery idempotent")
+check(movedSelection["instanceId"] as? String == "claudeAgent_second" && movedSelection["model"] as? String == "claude-opus-5-5"
+      && (movedSelection["options"] as? [[String: String]])?.first?["value"] == "xhigh", "keep model and options")
+check((command["dispatchMode"] as? [String: String])?["type"] == "start_immediately"
+      && command["createdBy"] as? String == "user" && (command["text"] as? String)?.contains("Claude - Second") == true,
+      "start immediately and tell the agent why")
+check(switchPlan([limited()], [main, chatGPT]).switches.isEmpty, "never switch to another tool")
+check(switchPlan([limited()], [main, T3Account(id: "claudeAgent_second", driver: "claudeAgent", name: "Off", enabled: false)])
+      .switches.isEmpty, "skip disabled accounts")
+check(switchPlan([limited(delegated: true)]).switches.isEmpty, "delegated children are left to their parent")
+check(switchPlan([limited(autoResume: false)]).switches.isEmpty, "respect a declined recovery")
+check(switchPlan([limited(snoozedUntil: now + 60)]).switches.isEmpty, "respect a snooze")
+check(switchPlan([limited(failedAt: now - 3600)]).switches.isEmpty, "old unarmed failures stay with T3")
+check(switchPlan([limited(failedAt: now - 3600, autoResume: true)]).switches.count == 1, "armed recovery switches at any age")
+check(switchPlan([limited(selection: "{}")]).switches.isEmpty, "unreadable selection is not sent")
+check(switchPlan([limited()], [main, T3Account(id: "claudeAgent_second", driver: "claudeAgent", name: "Built-in",
+                                               configured: false)]).switches.isEmpty,
+      "an unconfigured built-in instance may not be signed in")
+let projectOff = T3Account(id: "claudeAgent_second", driver: "claudeAgent", name: "Claude - Second",
+                           projectEnabled: ["project-a": false])
+var inProject = limited()
+inProject.projectID = "project-a"
+check(switchPlan([inProject], [main, projectOff]).switches.isEmpty, "a project can disable the target")
+inProject.projectID = "project-b"
+check(switchPlan([inProject], [main, projectOff]).switches.count == 1, "other projects keep the machine-wide setting")
+check(AccountSwitchPlanner.plan(threads: [limited()], accounts: [main, second], limitedUntil: [:], now: now,
+                                continuationDisabled: true) == .init(), "T3's global opt-out also stops switching")
+let custom = T3Account(id: "claudeAgent", driver: "claudeAgent", name: "Claude", customModels: ["claude-opus-5-5"])
+check(switchPlan([limited()], [custom, second]).switches.isEmpty, "a custom model must exist on the target")
+// Both accounts limited: wake for whichever resets first, after a margin.
+moved = switchPlan([limited(reset: now + 7200)], limited: ["claudeAgent": now + 7200, "claudeAgent_second": now + 1800])
+check(moved.switches.isEmpty, "no switch while every account is limited")
+check(moved.earlierResets["thread"] == .init(at: now + 1860, accountName: "Claude - Second"), "wake for the earlier reset")
+check(switchPlan([limited(reset: now + 1800)], limited: ["claudeAgent_second": now + 7200]).earlierResets.isEmpty,
+      "the thread's own reset comes first")
+check(switchPlan([limited()], limited: ["claudeAgent_second": now - 30]).switches.isEmpty, "wait out the reset margin")
+check(switchPlan([limited()], limited: ["claudeAgent_second": now - 61]).switches.count == 1, "switch back after the reset")
+
+// The native record keeps the Mac awake while a switch is delivered.
+var waiting = threadRecord
+waiting.state = .waiting
+var snapshot = T3Monitor.Snapshot()
+snapshot.records = [waiting]
+snapshot.limitedThreads = [limited()]
+snapshot.applyAccountSwitching(delivering: ["thread"], earlierResets: [:], now: now)
+check(snapshot.records.map(\.state) == [.working] && snapshot.records.first?.reason == "switching account",
+      "delivery keeps the conversation working")
+snapshot.records = [waiting]
+snapshot.applyAccountSwitching(delivering: [], earlierResets: ["thread": .init(at: now + 300, accountName: "Claude - Second")], now: now)
+let earlier = plan(snapshot.records)
+check(earlier.nextWakeAt == now + 180 && earlier.nextResetAccountName == "Claude - Second", "wake names the account that resets")
+snapshot.limitedThreads = []
+snapshot.records = [waiting]
+snapshot.applyAccountSwitching(delivering: ["thread"], earlierResets: [:], now: now)
+check(snapshot.records.map(\.state) == [.waiting], "a conversation that moved on is left alone")
+// Settings > Integrations: what is installed and where the hooks are.
+let setupHome = temporary.appendingPathComponent("home")
+let setupManifest = temporary.appendingPathComponent("hook-targets.json")
+try FileManager.default.createDirectory(at: setupHome, withIntermediateDirectories: true)
+// Tools installed on the test machine itself must not count.
+check(!Integrations.isInstalled(.claude, home: setupHome, systemFolders: [])
+      && !Integrations.isInstalled(.codex, home: setupHome, systemFolders: []), "no tools in an empty home")
+try FileManager.default.createDirectory(at: setupHome.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+check(Integrations.isInstalled(.claude, home: setupHome, systemFolders: []),
+      "a Claude config folder means Claude Code is installed")
+let bin = temporary.appendingPathComponent("bin")
+try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+FileManager.default.createFile(atPath: bin.appendingPathComponent("codex").path, contents: Data(), attributes: [.posixPermissions: 0o755])
+check(Integrations.isInstalled(.codex, home: setupHome, systemFolders: [bin.path]), "a codex command counts as installed")
+// A stray `defaults write` is clamped instead of crashing the app.
+let strayDefaults = UserDefaults(suiteName: "AgentLidClosed.checks.\(getpid())")!
+strayDefaults.set(1e20, forKey: "batteryFloorPercent")
+strayDefaults.set(Double.infinity, forKey: "sleepGraceSeconds")
+strayDefaults.set("-5", forKey: "notifyTimeoutSeconds")
+strayDefaults.set("20", forKey: "workingStaleMinutes")
+let stray = LidSettings.load(from: strayDefaults)
+check(stray.batteryFloor == 100 && stray.sleepGrace == LidSettings().sleepGrace && stray.notifyTimeout == 0
+      && stray.workingStale == 20 * 60, "out-of-range settings are clamped; strings still parse")
+strayDefaults.removePersistentDomain(forName: "AgentLidClosed.checks.\(getpid())")
+var files = Integrations.hookFiles(home: setupHome, manifest: setupManifest)
+check(files.map(\.tool) == [.claude, .codex] && files.allSatisfy { $0.isDefault && !$0.hasHooks },
+      "default files are listed without hooks")
+let hooked = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/Apps/agent-lid-hook"}]}]},"theme":"dark"}"#
+try Data(hooked.utf8).write(to: setupHome.appendingPathComponent(".claude/settings.json"))
+let work = temporary.appendingPathComponent("work-claude/settings.json").path
+try Data(#"{"claude":["\#(work)"],"codex":7}"#.utf8).write(to: setupManifest)
+files = Integrations.hookFiles(home: setupHome, manifest: setupManifest)
+check(files.map(\.path) == [Integrations.defaultHookFile(.claude, home: setupHome), work,
+                            Integrations.defaultHookFile(.codex, home: setupHome)],
+      "recorded files of other accounts follow the default")
+check(files[0].hasHooks && !files[1].hasHooks && !files[1].isDefault, "hooks are detected per file")
+try Data(#"{"hooks":{"Stop":"odd"}}"#.utf8).write(to: setupHome.appendingPathComponent(".claude/settings.json"))
+check(!Integrations.hasHooks(atPath: setupHome.appendingPathComponent(".claude/settings.json").path),
+      "odd settings read as no hooks")
+let t3Directory = temporary.appendingPathComponent("t3")
+check(T3Monitor.configuration(directory: t3Directory) == nil, "T3 Code isn't installed without its settings")
+try FileManager.default.createDirectory(at: t3Directory, withIntermediateDirectories: true)
+try Data(#"{"autoResumeLimitedThreads":false,"providerInstances":{"claudeAgent_second":{"driver":"claudeAgent","displayName":"Work"}}}"#.utf8)
+    .write(to: t3Directory.appendingPathComponent("settings.json"))
+let t3Setup = T3Monitor.configuration(directory: t3Directory)
+check(t3Setup?.continuationDisabled == true
+      && t3Setup?.accounts.map(\.id) == ["claudeAgent", "claudeAgent_second", "codex"]
+      && t3Setup?.accounts.map(\.name) == ["Claude", "Claude (Work)", "Codex"],
+      "T3 accounts and its continuation choice are read without its server")
+print("PASS \(checks) quota planning, lifecycle, account switching and setup checks")
