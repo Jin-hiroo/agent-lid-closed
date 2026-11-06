@@ -41,6 +41,10 @@ final class Controller {
     private(set) var switchAvailable = false
     /// This app has turned the built-in display's backlight off.
     private(set) var displayDimmed = false
+    /// Sleep is disabled by hand: until this time, or `.distantFuture` until turned off.
+    private(set) var manualUntil: Date?
+
+    var manualActive: Bool { manualUntil.map { $0 > Date() } ?? false }
 
     /// Restoring never goes below this, so a brightness read of 0 can't leave a black screen.
     private static let minimumRestoredBrightness: Float = 0.1
@@ -72,6 +76,7 @@ final class Controller {
     /// Account switches by T3 thread ID, until the conversation leaves the limited run.
     @ObservationIgnored private var switches: [String: SwitchAttempt] = [:]
     @ObservationIgnored private var lastSwitchAt: [String: Double] = [:]
+    @ObservationIgnored private var manualTimer: Task<Void, Never>?
 
     private struct SwitchAttempt {
         enum Phase: Equatable {
@@ -110,6 +115,13 @@ final class Controller {
         dimEnabled = UserDefaults.standard.bool(forKey: "dimDisplay")
         wakeEnabled = UserDefaults.standard.bool(forKey: "wakeForQuotaReset")
         switchEnabled = UserDefaults.standard.bool(forKey: "switchAccountAtLimit")
+        // Kept across a crash restart; a timer that ran out meanwhile is dropped in start().
+        let stored = UserDefaults.standard.double(forKey: ManualAwake.defaultsKey)
+        if stored == ManualAwake.indefinite {
+            manualUntil = .distantFuture
+        } else if stored > 0, stored.isFinite {
+            manualUntil = Date(timeIntervalSince1970: stored)
+        }
     }
 
     func start() {
@@ -127,6 +139,14 @@ final class Controller {
             displayDimmed = true
         }
         Log.write("Started\(Power.dryRun ? " (dry run)" : "")\(holding ? "; sleep still disabled from last run" : "")\(displayDimmed ? "; display still dimmed from last run" : "")")
+        if let manualUntil {
+            if manualUntil > Date() {
+                Log.write("Sleep still disabled by hand \(Self.describeManual(manualUntil))")
+                scheduleManualEnd()
+            } else {
+                clearManual()
+            }
+        }
 
         ticker = Task { [weak self] in
             while !Task.isCancelled {
@@ -156,6 +176,8 @@ final class Controller {
     func shutdown() {
         guard started else { return }
         ticker?.cancel()
+        // Quit promises normal sleep, so a manual hold doesn't come back at the next launch.
+        if manualUntil != nil { clearManual() }
         if Power.wakeIsSetUp, let error = Power.setScheduledWake(nil) { Log.write(error) }
         if displayDimmed { restoreDisplay() }
         guard holding else { return }
@@ -197,7 +219,55 @@ final class Controller {
         evaluate()
     }
 
+    /// Disables sleep by hand for `duration`, or until turned off when nil.
+    func startManual(for duration: TimeInterval?) {
+        let until = duration.map { Date().addingTimeInterval($0) } ?? .distantFuture
+        manualUntil = until
+        // Test runs (AGENT_LID_STATE_DIR) leave the real preferences alone.
+        if !Paths.hasTestState {
+            UserDefaults.standard.set(duration == nil ? ManualAwake.indefinite : until.timeIntervalSince1970,
+                                      forKey: ManualAwake.defaultsKey)
+        }
+        Log.write("Sleep disabled by hand \(Self.describeManual(until))")
+        scheduleManualEnd()
+        evaluate()
+    }
+
+    func stopManual() {
+        guard manualUntil != nil else { return }
+        clearManual()
+        Log.write("Manual sleep disable turned off: back to automatic")
+        evaluate()
+    }
+
+    private func clearManual() {
+        manualTimer?.cancel()
+        manualTimer = nil
+        manualUntil = nil
+        if !Paths.hasTestState { UserDefaults.standard.removeObject(forKey: ManualAwake.defaultsKey) }
+    }
+
+    /// Ends a timed hold on time, rather than on the next 5 s tick.
+    private func scheduleManualEnd() {
+        manualTimer?.cancel()
+        guard let manualUntil, manualUntil != .distantFuture else { return manualTimer = nil }
+        manualTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, manualUntil.timeIntervalSinceNow) + 0.05))
+            if !Task.isCancelled { self?.evaluate() }
+        }
+    }
+
+    private static func describeManual(_ until: Date) -> String {
+        until == .distantFuture ? "until turned off"
+            : "for \(ManualAwake.describe(until.timeIntervalSinceNow)) (until \(until.formatted(date: .omitted, time: .shortened)))"
+    }
+
     func evaluate() {
+        if let manualUntil, manualUntil <= Date() {
+            clearManual()
+            Log.write("Manual sleep disable timer ended: back to automatic")
+        }
+        let manual = manualActive
         if watcher == nil {
             try? FileManager.default.createDirectory(at: Paths.sessionsDir, withIntermediateDirectories: true)
             watcher = DirectoryWatcher(url: Paths.sessionsDir) { [weak self] directoryGone in
@@ -226,7 +296,7 @@ final class Controller {
         lidClosed = Power.lidClosed
         sleepDisabled = Power.sleepDisabled
         blocker = currentBlocker()
-        let plan = wakeEnabled && blocker == nil
+        let plan = wakeEnabled && autoEnabled && blocker == nil
             ? QuotaWakePlan.evaluate(contents.records, now: now, isAlive: ProcessLookup.isAlive)
             : QuotaWakePlan.evaluate([], now: now, isAlive: ProcessLookup.isAlive)
         if t3.error == nil {
@@ -239,7 +309,7 @@ final class Controller {
         // Failed telemetry cannot cancel a known future alarm. Explicit pause,
         // disable and safety blockers still cancel it immediately.
         let desiredWake: Double?
-        if t3.error != nil, wakeEnabled, blocker == nil,
+        if t3.error != nil, wakeEnabled, autoEnabled, blocker == nil,
            let lastT3WakeAt, lastT3WakeAt > now + 5 {
             desiredWake = min(plan.nextWakeAt ?? lastT3WakeAt, lastT3WakeAt)
         } else {
@@ -250,9 +320,13 @@ final class Controller {
         updateDisplayDimming()
 
         guard !transitioning, Date() >= retryAt else { return }
-        if (result.keepAwake || quotaHoldUntil != nil) && blocker == nil {
+        let automaticHold = autoEnabled && (result.keepAwake || quotaHoldUntil != nil)
+        if (manual || automaticHold) && blocker == nil {
             pendingSleepAt = nil
-            if !holding { transition(hold: true, why: quotaHoldUntil != nil ? "usage resets shortly" : "an agent is working") }
+            if !holding {
+                transition(hold: true, why: manual ? "sleep disabled by hand"
+                    : quotaHoldUntil != nil ? "usage resets shortly" : "an agent is working")
+            }
         } else if holding {
             if let blocker {
                 pendingSleepAt = nil
@@ -274,6 +348,10 @@ final class Controller {
 
     var headline: String {
         if let blocker { return Self.describe(blocker) }
+        if let manualUntil, manualActive {
+            if manualUntil == .distantFuture { return "Sleep disabled by hand until you turn it off" }
+            return "Sleep disabled by hand: \(ManualAwake.describe(manualUntil.timeIntervalSinceNow)) left (until \(manualUntil.formatted(date: .omitted, time: .shortened)))"
+        }
         if quotaHoldUntil != nil {
             let providers = quotaHoldingAccounts.joined(separator: " and ")
             return "Keeping your Mac awake for \(providers)'s usage reset"
@@ -307,6 +385,7 @@ final class Controller {
         case .setupNeeded, .batteryLow, .tooHot: return "exclamationmark.triangle"
         case nil: break
         }
+        if manualActive { return manualUntil == .distantFuture ? "sun.max.fill" : "timer" }
         if holding { return pendingSleepAt == nil ? "cup.and.saucer.fill" : "hourglass" }
         return "moon.zzz"
     }
@@ -489,8 +568,8 @@ final class Controller {
             // Hooks or a quota warm-up can arrive while pmset runs. Refresh before an
             // explicit sleep so we don't put a newly active session back to sleep.
             evaluate()
-            let maySleep = blocker != nil || (!evaluation.keepAwake && quotaHoldUntil == nil
-                && Date().timeIntervalSince1970 >= evaluation.sleepAllowedAt)
+            let maySleep = blocker != nil || (!manualActive && (!autoEnabled || (!evaluation.keepAwake && quotaHoldUntil == nil
+                && Date().timeIntervalSince1970 >= evaluation.sleepAllowedAt)))
             if maySleep && Power.lidClosed && !Power.hasExternalDisplay {
                 Log.write("Lid is closed: sleeping now")
                 Power.sleepNow()
@@ -556,7 +635,7 @@ final class Controller {
     }
 
     private func currentBlocker() -> Blocker? {
-        if !autoEnabled { return .paused }
+        if !autoEnabled && !manualActive { return .paused }
         if !Power.isSetUp { return .setupNeeded }
         if let battery = Power.battery, battery.onBattery, battery.percent <= settings.batteryFloor {
             return .batteryLow(battery.percent)

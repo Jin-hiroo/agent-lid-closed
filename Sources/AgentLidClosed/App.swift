@@ -79,6 +79,17 @@ struct MenuContent: View {
             }
         }
         Divider()
+        Menu(controller.manualActive ? "Keep Mac Awake (On)" : "Keep Mac Awake") {
+            if controller.manualActive {
+                Button("Turn Off (Back to Automatic)") { controller.stopManual() }
+                Divider()
+            }
+            Button("Until I Turn It Off") { controller.startManual(for: nil) }
+            ForEach([30, 60, 120, 240], id: \.self) { minutes in
+                Button("For \(ManualAwake.describe(Double(minutes) * 60))") { controller.startManual(for: Double(minutes) * 60) }
+            }
+            Button("For a Custom Time…") { askForDuration() }
+        }
         Toggle("Automatic Mode", isOn: Binding(get: { controller.autoEnabled },
                                                set: { controller.setAutoEnabled($0) }))
         Toggle("Turn Display Off When Lid Closed", isOn: Binding(get: { controller.dimEnabled },
@@ -96,6 +107,27 @@ struct MenuContent: View {
         Divider()
         Button("Quit (restores normal sleep)") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+
+    /// A small prompt for a typed duration; the menu itself can't hold a text field.
+    private func askForDuration() {
+        let alert = NSAlert()
+        alert.messageText = "Keep Your Mac Awake For…"
+        alert.informativeText = "Enter a duration, such as 90 (minutes), 1:30, 2h or 1h 30m. After it ends, sleep follows your agents again."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "1h 30m"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        NSApp.activate(ignoringOtherApps: true)
+        while alert.runModal() == .alertFirstButtonReturn {
+            if let duration = ManualAwake.parseDuration(field.stringValue) {
+                controller.startManual(for: duration)
+                return
+            }
+            alert.informativeText = "\"\(field.stringValue)\" isn't a duration up to 7 days. Try 90, 1:30, 2h or 1h 30m."
+        }
     }
 
     private static func age(_ since: Date) -> String {

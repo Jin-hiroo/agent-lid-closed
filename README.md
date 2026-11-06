@@ -216,12 +216,23 @@ Session files are in `~/Library/Application Support/AgentLidClosed/sessions/`. C
 | Icon | Meaning |
 | --- | --- |
 | Cup | At least one agent is working; sleep is disabled |
+| Sun | Sleep is disabled by hand until you turn it off |
+| Timer | Sleep is disabled by hand for a set time |
 | Hourglass | All sessions are waiting; the grace period is running |
 | Moon | Normal sleep |
 | Pause | Automatic Mode is off |
 | Warning triangle | Setup needed, low battery or thermal limit; normal sleep |
 
 The menu lists each session's tool, project and activity, plus lid state, system sleep state and whether the display is off. **Automatic Mode** controls sleep management. **Turn Display Off When Lid Closed** controls dimming and is on by default. **Wake for Usage Resets** controls the shared Claude/Codex quota wake alarm and is also on by default. **Switch Accounts at Usage Limits** appears only when T3 Code has two accounts of one tool; it moves a limited T3 conversation to another account and is on by default. The latest switch, or why one failed, appears under the status. **Settings…**, **Open Log** and **Quit** are available.
+
+### Keep Mac Awake by hand
+
+**Keep Mac Awake** disables sleep whether or not an agent is working, lid closed included:
+
+- **Until I Turn It Off** holds until you choose **Turn Off (Back to Automatic)**.
+- **For 30 min**, **1 h**, **2 h** or **4 h**, or **For a Custom Time…**, where you type a duration such as `90` (minutes), `1:30`, `2h` or `1h 30m`, up to 7 days.
+
+When the timer ends, sleep follows your agents again: the Mac stays awake if one is working, and otherwise sleeps after the usual grace period (right away with the lid closed). The hold also works with Automatic Mode off. The display still turns off with the lid closed, and the low-battery and heat limits still allow sleep. A hold survives a crash restart; **Quit** ends it.
 
 ## Settings
 
@@ -259,7 +270,7 @@ The same preferences can be scripted with `defaults write local.AgentLidClosed <
 - **Codex background work.** Detached commands that outlive a completed turn are not included in Codex's `Stop` payload. They are not independently tracked. Claude background tasks and lifecycle-reported subagents are tracked.
 - **Other scheduled work.** Only supported Claude/Codex subscription-limit waits schedule a wake. Timers and other scheduled future turns do not keep the Mac awake between turns.
 - **Hooks that continue a turn.** Another `Stop` or `SubagentStop` hook can request more work after this app has recorded completion. Until the next activity hook, the session may count as waiting. Increase the grace period or turn off Automatic Mode for long continuation-only workflows.
-- **Manual sleep.** macOS may ignore manual sleep while the hold is active. Turn off Automatic Mode or quit first.
+- **Manual sleep.** macOS may ignore manual sleep while the hold is active. Turn off Automatic Mode and **Keep Mac Awake**, or quit first.
 - **Private brightness API.** Apple silicon brightness control uses `DisplayServices`. If a future macOS removes that API, dimming is skipped and a failure is logged.
 - **Other hosts and remote work.** Only hosts that load and run the configured local hooks are visible, plus T3 Code. Cloud sessions, the Claude desktop app's Chat and Cowork, and hosts that skip hooks are not tracked; a running process alone does not imply an active turn. See [Which apps are tracked](#which-apps-are-tracked).
 
@@ -270,7 +281,7 @@ swift build                    # debug build, when SwiftPM is available
 ./scripts/test-hook.sh         # Claude + Codex hook/state regression checks
 python3 scripts/test-install.py # hook merging and upgrade compatibility checks
 ./scripts/build-app.sh         # build/AgentLidClosed.app
-./scripts/test-quota.sh         # reset planning + hook/status-line/app dry-run checks
+./scripts/test-quota.sh         # reset planning + hook/status-line/app + manual timer dry-run checks
 
 # Dry runs can coexist with the installed app:
 python3 scripts/test-display.py # both tools: dim, sleep, restore; no real power changes

@@ -14,3 +14,4 @@ swiftc -swift-version 6 -sdk "$SDK" -target "$(uname -m)-apple-macosx14.0" \
 python3 scripts/test-t3.py "$TEMP_DIR/t3-checks" "${1:-build/AgentLidClosed.app}"
 python3 scripts/test-quota.py "${1:-build/AgentLidClosed.app}"
 python3 scripts/test-mixed.py "${1:-build/AgentLidClosed.app}"
+python3 scripts/test-manual.py "${1:-build/AgentLidClosed.app}"
