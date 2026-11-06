@@ -376,4 +376,13 @@ check(t3Setup?.continuationDisabled == true
       && t3Setup?.accounts.map(\.id) == ["claudeAgent", "claudeAgent_second", "codex"]
       && t3Setup?.accounts.map(\.name) == ["Claude", "Claude (Work)", "Codex"],
       "T3 accounts and its continuation choice are read without its server")
-print("PASS \(checks) quota planning, lifecycle, account switching and setup checks")
+for (text, seconds) in [("90", 5400.0), ("1:30", 5400), ("2h", 7200), ("45m", 2700), ("1h30m", 5400),
+                        ("1h 30m", 5400), ("1.5h", 5400), ("2 hours 10 min", 7800), (" 30 ", 1800), ("20s", 20)] {
+    check(ManualAwake.parseDuration(text) == seconds, "manual duration \(text)")
+}
+for text in ["", "0", "-5", "abc", "h", "1:5", "1:60", "1x", "2h foo", "8d", "200h", "1h-30m", "9223372036854775807:00", "1e400", "inf", "nan", "1.5:00", ":30"] {
+    check(ManualAwake.parseDuration(text) == nil, "manual duration rejects \(text)")
+}
+check(ManualAwake.describe(5400) == "1 h 30 min" && ManualAwake.describe(2700) == "45 min"
+      && ManualAwake.describe(20) == "20 s" && ManualAwake.describe(7200) == "2 h", "manual durations read naturally")
+print("PASS \(checks) quota planning, lifecycle, account switching, setup and manual timer checks")
