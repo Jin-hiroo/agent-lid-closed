@@ -737,7 +737,9 @@ export class Controller {
       headline: this.headline,
       detail: this.detail,
       icon: this.icon,
-      sessions: this.evaluation.sessions.map((s) => ({ id: s.id, text: `${s.accountName} · ${s.project}: ${s.label} · ${age(s.since)}`, keepsAwake: s.keepsAwake })),
+      // `title` and `state` are the menu's two columns; `text` is both in one line.
+      sessions: this.evaluation.sessions.map((s) => ({ id: s.id, text: `${s.accountName} · ${s.project}: ${s.label} · ${age(s.since)}`,
+        title: `${s.project} · ${s.accountName}`, state: `${s.label} · ${age(s.since)}`, keepsAwake: s.keepsAwake })),
       settings: effective,
       manualActive: this.manualActive,
       holding: this.holding,

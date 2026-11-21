@@ -29,7 +29,16 @@ namespace AgentLidClosed
         static int Main(string[] args)
         {
             if (args.Length > 0 && args[0] == "proc") return ProcessSnapshot.Print();
-            if (args.Length == 3 && args[0] == "render-settings") return SettingsForm.Render(args[1], args[2]);
+            if (args.Length >= 3 && (args[0] == "render-settings" || args[0] == "render-menu"))
+            {
+                // An optional fourth argument, light or dark, overrides the system setting.
+                Theme.EnableDpi();
+                Theme.Load();
+                if (args.Length > 3) Theme.Force(args[3] == "dark");
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                return args[0] == "render-menu" ? TrayApp.RenderMenu(args[1], args[2]) : SettingsForm.Render(args[1], args[2]);
+            }
             if (args.Length > 0 && args[0] == "settings")
             {
                 EventWaitHandle running;
@@ -49,6 +58,8 @@ namespace AgentLidClosed
             using (var mutex = new Mutex(true, "Local\\AgentLidClosedTray", out created))
             {
                 if (!created) return 0;
+                Theme.EnableDpi();
+                Theme.Load();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 var app = new TrayApp();
@@ -601,9 +612,12 @@ namespace AgentLidClosed
             SystemEvents.SessionEnding += delegate { ReleaseForExit(); };
             SystemEvents.DisplaySettingsChanged += delegate { ReportPower(true); };
 
+            SystemEvents.UserPreferenceChanged += delegate { ui.Post(delegate { RefreshTheme(); }, null); };
+
             tray.Text = "Agent Lid Closed";
             tray.Icon = IconFor("moon");
             tray.Visible = true;
+            MenuRenderer.Apply(menu);
             tray.ContextMenuStrip = menu;
             menu.Opening += delegate { BuildMenu(); };
             tray.MouseUp += delegate(object sender, MouseEventArgs e)
@@ -891,37 +905,28 @@ namespace AgentLidClosed
 
         // ---- icon
 
+        /// The glyph for a status icon name, shared by the tray, the menu and Settings.
+        public static string GlyphFor(string name)
+        {
+            switch (name)
+            {
+                case "cup": return Theme.Cup;
+                case "sun": return Theme.Sun;
+                case "timer": return Theme.Stopwatch;
+                case "hourglass": return Theme.Clock;
+                case "pause": return Theme.Pause;
+                case "warning": return Theme.Warning;
+                default: return Theme.Moon;
+            }
+        }
+
         Icon IconFor(string name)
         {
             Icon icon;
             if (icons.TryGetValue(name, out icon)) return icon;
-            string glyph;
-            switch (name)
-            {
-                case "cup": glyph = "☕"; break;
-                case "sun": glyph = "☀"; break;
-                case "timer": glyph = "⏱"; break;
-                case "hourglass": glyph = "⌛"; break;
-                case "pause": glyph = "⏸"; break;
-                case "warning": glyph = "⚠"; break;
-                default: glyph = "☾"; break;
-            }
-            bool light = false;
-            try { light = Convert.ToInt32(Registry.GetValue("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "SystemUsesLightTheme", 0)) == 1; }
-            catch { }
-            using (var bitmap = new Bitmap(32, 32))
-            {
-                using (var g = Graphics.FromImage(bitmap))
-                using (var font = new Font("Segoe UI Symbol", 20, FontStyle.Regular, GraphicsUnit.Pixel))
-                using (var brush = new SolidBrush(light ? Color.Black : Color.White))
-                {
-                    g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                    g.Clear(Color.Transparent);
-                    var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                    g.DrawString(glyph, font, brush, new RectangleF(0, 0, 32, 32), format);
-                }
-                icon = Icon.FromHandle(bitmap.GetHicon());
-            }
+            var p = Theme.Shell;
+            Color color = name == "warning" ? p.Warn : p.Dark ? Color.White : Color.Black;
+            icon = Theme.MakeIcon(GlyphFor(name), color, Math.Max(16, SystemInformation.SmallIconSize.Width), null);
             icons[name] = icon;
             return icon;
         }
@@ -935,73 +940,187 @@ namespace AgentLidClosed
             tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
         }
 
+        /// Light or dark mode or the accent colour changed: redraw the icon, menu and Settings.
+        void RefreshTheme()
+        {
+            if (!Theme.Load()) return;
+            var old = new List<Icon>(icons.Values);
+            icons.Clear();
+            UpdateIcon();
+            foreach (Icon icon in old) Theme.FreeIcon(icon);
+            MenuRenderer.Apply(menu);
+            if (settingsForm != null && !settingsForm.IsDisposed)
+            {
+                bool visible = settingsForm.Visible;
+                int page = settingsForm.Page;
+                Rectangle bounds = settingsForm.Bounds;
+                // Close disposes a shown form; Dispose is for one that was never shown.
+                if (visible) settingsForm.Close(); else settingsForm.Dispose();
+                settingsForm = null;
+                if (visible)
+                {
+                    ShowSettings();
+                    settingsForm.Page = page;
+                    settingsForm.Bounds = bounds;
+                }
+            }
+        }
+
         // ---- menu
 
-        ToolStripMenuItem Item(ToolStripItemCollection items, string text, EventHandler click, bool check = false, bool enabled = true)
+        static ToolStripMenuItem Item(ToolStripItemCollection items, string text, EventHandler click, bool check = false, bool enabled = true)
         {
             var item = new ToolStripMenuItem(text);
             item.Checked = check;
             item.Enabled = enabled;
+            item.Padding = new Padding(0, Theme.Px(3), 0, Theme.Px(3));
             if (click != null) item.Click += click;
             items.Add(item);
             return item;
         }
 
-        void Toggle(ToolStripItemCollection items, string text, string key)
+        static bool Flag(Dictionary<string, object> status, string key)
         {
-            bool on = Flag(key);
-            Item(items, text, delegate { SendCommand("set", "key", key, "value", !on); }, on, status != null);
+            object value = Get(Get(status, "settings") as Dictionary<string, object>, key);
+            return value is bool && (bool)value;
         }
 
-        void BuildMenu()
+        static void Toggle(ToolStripItemCollection items, Dictionary<string, object> status, TrayApp app, string text, string key)
+        {
+            bool on = Flag(status, key);
+            Item(items, text, delegate { app.SendCommand("set", "key", key, "value", !on); }, on, status != null);
+        }
+
+        void BuildMenu() { FillMenu(menu, status, this); }
+
+        /// The tray menu for a status. `app` is null when the menu is only drawn (render-menu);
+        /// nothing is clicked then.
+        static void FillMenu(ContextMenuStrip menu, Dictionary<string, object> status, TrayApp app)
         {
             menu.Items.Clear();
+            var p = Theme.Shell;
+            int imageSize = Theme.Px(16);
             if (status == null)
             {
-                Item(menu.Items, "起動中…", null, false, false);
+                var starting = Item(menu.Items, "起動中…", null, false, false);
+                starting.Tag = MenuTag.Header;
+                starting.Font = Theme.MenuStrong;
             }
             else
             {
-                Item(menu.Items, (Get(status, "headline") as string) ?? "", null, false, false);
+                string name = Get(status, "icon") as string;
+                var header = Item(menu.Items, (Get(status, "headline") as string) ?? "", null, false, false);
+                header.Tag = MenuTag.Header;
+                header.Font = Theme.MenuStrong;
+                header.Image = Theme.GlyphImage(GlyphFor(name), name == "warning" ? p.Warn : p.Accent, imageSize);
                 foreach (object line in (Get(status, "detail") as object[]) ?? new object[0])
-                    Item(menu.Items, line as string, null, false, false);
+                {
+                    var detail = Item(menu.Items, line as string, null, false, false);
+                    detail.Tag = MenuTag.Detail;
+                    detail.Font = Theme.MenuSmall;
+                    detail.Padding = new Padding(0, Theme.Px(1), 0, Theme.Px(1));
+                }
                 menu.Items.Add(new ToolStripSeparator());
                 var sessions = (Get(status, "sessions") as object[]) ?? new object[0];
-                if (sessions.Length == 0) Item(menu.Items, "エージェントのセッションはありません", null, false, false);
-                foreach (object session in sessions)
-                    Item(menu.Items, Get(session as Dictionary<string, object>, "text") as string, null, false, false);
+                if (sessions.Length == 0)
+                {
+                    var none = Item(menu.Items, "エージェントのセッションはありません", null, false, false);
+                    none.Tag = MenuTag.Detail;
+                }
+                foreach (object entry in sessions)
+                {
+                    var session = entry as Dictionary<string, object>;
+                    string title = Get(session, "title") as string;
+                    string state = Get(session, "state") as string;
+                    var row = Item(menu.Items, title != null && state != null ? title : (Get(session, "text") as string) ?? "", null, false, false);
+                    row.Tag = MenuTag.Session;
+                    if (title != null && state != null) row.ShortcutKeyDisplayString = state;
+                    bool awake = Get(session, "keepsAwake") is bool && (bool)Get(session, "keepsAwake");
+                    // Green while the session keeps the computer awake, grey while it waits for you.
+                    row.Image = Theme.GlyphImage(null, awake ? p.Good : p.Disabled, imageSize);
+                }
             }
             menu.Items.Add(new ToolStripSeparator());
             bool manual = status != null && Get(status, "manualActive") is bool && (bool)Get(status, "manualActive");
             var keep = Item(menu.Items, manual ? "スリープさせない（オン）" : "スリープさせない", null, manual, status != null);
+            MenuRenderer.Apply(keep.DropDown);
             if (manual)
             {
-                Item(keep.DropDownItems, "オフにする（自動に戻す）", delegate { SendCommand("manualOff"); });
+                Item(keep.DropDownItems, "オフにする（自動に戻す）", delegate { app.SendCommand("manualOff"); });
                 keep.DropDownItems.Add(new ToolStripSeparator());
             }
-            Item(keep.DropDownItems, "オフにするまで", delegate { SendCommand("manual"); });
+            Item(keep.DropDownItems, "オフにするまで", delegate { app.SendCommand("manual"); });
             foreach (int minutes in new[] { 30, 60, 120, 240 })
             {
                 int m = minutes;
                 string label = m < 60 ? m + " 分" : (m / 60) + " 時間";
-                Item(keep.DropDownItems, label, delegate { SendCommand("manual", "seconds", m * 60); });
+                Item(keep.DropDownItems, label, delegate { app.SendCommand("manual", "seconds", m * 60); });
             }
-            Item(keep.DropDownItems, "時間を指定…", delegate { AskForDuration(); });
-            Toggle(menu.Items, "自動モード", "autoEnabled");
-            Toggle(menu.Items, "使用量のリセット前にスリープ解除", "wakeForQuotaReset");
+            Item(keep.DropDownItems, "時間を指定…", delegate { app.AskForDuration(); });
+            Toggle(menu.Items, status, app, "自動モード", "autoEnabled");
+            Toggle(menu.Items, status, app, "使用量のリセット前にスリープ解除", "wakeForQuotaReset");
             if (status != null && Get(status, "switchAvailable") is bool && (bool)Get(status, "switchAvailable"))
-                Toggle(menu.Items, "使用上限でアカウントを切り替える", "switchAccountAtLimit");
+                Toggle(menu.Items, status, app, "使用上限でアカウントを切り替える", "switchAccountAtLimit");
             if (status != null && Get(status, "t3Installed") is bool && (bool)Get(status, "t3Installed"))
             {
                 object auto = Get(status, "autoResume");
                 bool on = auto is bool && (bool)auto;
-                Item(menu.Items, "リセット後に自動で再開する (T3 Code)", delegate { SendCommand("autoResume", "value", !on); }, on);
+                Item(menu.Items, "リセット後に自動で再開する (T3 Code)", delegate { app.SendCommand("autoResume", "value", !on); }, on);
             }
             menu.Items.Add(new ToolStripSeparator());
-            Item(menu.Items, "設定…", delegate { ShowSettings(); });
-            Item(menu.Items, "ログを開く", delegate { OpenLog(); });
+            var settings = Item(menu.Items, "設定…", delegate { app.ShowSettings(); });
+            settings.Image = Theme.GlyphImage(Theme.Gear, p.Text, imageSize);
+            var log = Item(menu.Items, "ログを開く", delegate { app.OpenLog(); });
+            log.Image = Theme.GlyphImage(Theme.Document, p.Text, imageSize);
             menu.Items.Add(new ToolStripSeparator());
-            Item(menu.Items, "終了（通常のスリープに戻す）", delegate { Quit(); });
+            var quit = Item(menu.Items, "終了（通常のスリープに戻す）", delegate { app.Quit(); });
+            quit.Image = Theme.GlyphImage(Theme.Power, p.Text, imageSize);
+        }
+
+        /// For checking the menu without a tray: draws it, filled from a status.json, into a PNG,
+        /// with the "スリープさせない" submenu beside it.
+        public static int RenderMenu(string statusFile, string output)
+        {
+            var status = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(statusFile, Encoding.UTF8)) as Dictionary<string, object>;
+            using (var menu = new ContextMenuStrip())
+            {
+                MenuRenderer.Apply(menu);
+                FillMenu(menu, status, null);
+                ToolStripDropDown sub = null;
+                foreach (ToolStripItem item in menu.Items)
+                {
+                    var withDropDown = item as ToolStripMenuItem;
+                    if (withDropDown != null && withDropDown.HasDropDownItems) sub = withDropDown.DropDown;
+                }
+                Size main = Measure(menu), side = sub != null ? Measure(sub) : Size.Empty;
+                int gap = Theme.Px(12);
+                using (var bitmap = new Bitmap(main.Width + gap + side.Width + gap * 2, Math.Max(main.Height, side.Height) + gap * 2))
+                {
+                    using (var g = Graphics.FromImage(bitmap)) g.Clear(Theme.Shell.Dark ? Color.FromArgb(0x10, 0x10, 0x10) : Color.FromArgb(0xD8, 0xDE, 0xE6));
+                    Draw(menu, bitmap, new Point(gap, gap), main);
+                    if (sub != null) Draw(sub, bitmap, new Point(gap * 2 + main.Width, gap), side);
+                    bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+                }
+            }
+            return 0;
+        }
+
+        static Size Measure(ToolStripDropDown menu)
+        {
+            menu.PerformLayout();
+            Size size = menu.GetPreferredSize(Size.Empty);
+            menu.Size = size;
+            menu.PerformLayout();
+            return menu.Size;
+        }
+
+        static void Draw(ToolStripDropDown menu, Bitmap target, Point at, Size size)
+        {
+            using (var part = new Bitmap(size.Width, size.Height))
+            {
+                menu.DrawToBitmap(part, new Rectangle(Point.Empty, size));
+                using (var g = Graphics.FromImage(target)) g.DrawImage(part, at);
+            }
         }
 
         public void OpenLog()
@@ -1118,153 +1237,228 @@ namespace AgentLidClosed
         }
     }
 
-    static class InputDialog
-    {
-        public static string Show(string title, string message, string placeholder)
-        {
-            using (var form = new Form())
-            {
-                form.Text = title;
-                form.FormBorderStyle = FormBorderStyle.FixedDialog;
-                form.StartPosition = FormStartPosition.CenterScreen;
-                form.MinimizeBox = false; form.MaximizeBox = false;
-                form.ClientSize = new Size(420, 140);
-                form.TopMost = true;
-                var label = new Label { Text = message, Left = 12, Top = 12, Width = 396, Height = 48 };
-                var box = new TextBox { Left = 12, Top = 64, Width = 396, Text = "" };
-                var ok = new Button { Text = "開始", Left = 232, Top = 100, Width = 84, DialogResult = DialogResult.OK };
-                var cancel = new Button { Text = "キャンセル", Left = 324, Top = 100, Width = 84, DialogResult = DialogResult.Cancel };
-                form.Controls.AddRange(new Control[] { label, box, ok, cancel });
-                form.AcceptButton = ok; form.CancelButton = cancel;
-                return form.ShowDialog() == DialogResult.OK ? box.Text : null;
-            }
-        }
-    }
-
     // ---------------------------------------------------------------- settings window
 
+    /// Windows 11 style Settings: pages listed on the left, each a column of cards.
     class SettingsForm : Form
     {
         readonly TrayApp app;
         bool updating;
-        readonly CheckBox autoBox = new CheckBox(), loginBox = new CheckBox(), wakeBox = new CheckBox(), switchBox = new CheckBox(), resumeBox = new CheckBox();
-        readonly NumericUpDown batteryFloor = new NumericUpDown(), sleepGrace = new NumericUpDown(), notifyTimeout = new NumericUpDown(),
-            workingStale = new NumericUpDown(), backgroundStale = new NumericUpDown();
-        readonly Label switchNote = new Label(), accountsLabel = new Label(), t3Label = new Label(), powerLabel = new Label();
-        readonly FlowLayoutPanel hookPanel = new FlowLayoutPanel();
+        readonly ToggleSwitch autoBox = new ToggleSwitch(), loginBox = new ToggleSwitch(), wakeBox = new ToggleSwitch(),
+            switchBox = new ToggleSwitch(), resumeBox = new ToggleSwitch();
+        readonly Stepper batteryFloor = new Stepper(), sleepGrace = new Stepper(), notifyTimeout = new Stepper(),
+            workingStale = new Stepper(), backgroundStale = new Stepper();
+        readonly StatusCard statusCard = new StatusCard();
+        readonly Stack integrations = new Stack();
+        readonly List<Control> hookControls = new List<Control>();
+        readonly List<NavButton> nav = new List<NavButton>();
+        readonly List<Stack> pages = new List<Stack>();
+        readonly List<string> titles = new List<string>();
+        readonly Label pageTitle = new Label();
+        SettingCard switchCard, accountsCard, t3Card, powerCard, addFolderCard;
+        NoteLabel hookNote;
+        ButtonRow integrationButtons;
+        Icon appIcon;
         string hookSignature;
+        int page = -1;
+        const string SwitchDefault = "ある会話が 1 つのアカウントの上限に達すると、リセットを待たずに同じツールの別のアカウントですぐに続けます。";
 
         public SettingsForm(TrayApp app)
         {
             this.app = app;
+            var p = Theme.App;
             Text = "Agent Lid Closed の設定";
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            AutoScaleMode = AutoScaleMode.None;
+            FormBorderStyle = FormBorderStyle.Sizable;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(560, 470);
-            Font = new Font("Yu Gothic UI", 9F);
-            var tabs = new TabControl { Dock = DockStyle.Fill };
-            tabs.TabPages.Add(GeneralTab());
-            tabs.TabPages.Add(TimingTab());
-            tabs.TabPages.Add(LimitsTab());
-            tabs.TabPages.Add(IntegrationsTab());
-            Controls.Add(tabs);
+            BackColor = p.Window;
+            ForeColor = p.Text;
+            Font = Theme.Body;
+            ClientSize = new Size(Theme.Px(860), Theme.Px(620));
+            MinimumSize = SizeFromClientSize(new Size(Theme.Px(700), Theme.Px(460)));
+            appIcon = Theme.MakeIcon(Theme.Cup, p.OnAccent, Theme.Px(32), p.Accent);
+            Icon = appIcon;
+
+            var side = new Panel { Dock = DockStyle.Left, Width = Theme.Px(264), BackColor = p.Window };
+            var brand = new Brand { Left = Theme.Px(12), Top = Theme.Px(8), Width = side.Width - Theme.Px(24) };
+            side.Controls.Add(brand);
+
+            var main = new Panel { Dock = DockStyle.Fill, BackColor = p.Window, Padding = new Padding(Theme.Px(12), 0, 0, 0) };
+            pageTitle.Dock = DockStyle.Top;
+            pageTitle.Height = Theme.Px(76);
+            pageTitle.Font = Theme.Title;
+            pageTitle.ForeColor = p.Text;
+            pageTitle.BackColor = p.Window;
+            pageTitle.TextAlign = ContentAlignment.MiddleLeft;
+            pageTitle.Padding = new Padding(0, Theme.Px(8), 0, 0);
+            pageTitle.UseMnemonic = false;
+            main.Controls.Add(pageTitle);
+
+            AddPage("一般", Theme.Gear, GeneralPage());
+            AddPage("タイミング", Theme.Stopwatch, TimingPage());
+            AddPage("使用量の上限", Theme.Gauge, LimitsPage());
+            AddPage("連携", Theme.Puzzle, IntegrationsPage());
+            for (int i = 0; i < nav.Count; i++)
+            {
+                var button = nav[i];
+                button.Left = Theme.Px(12);
+                button.Top = brand.Bottom + Theme.Px(12) + i * Theme.Px(40);
+                button.Width = side.Width - Theme.Px(24);
+                side.Controls.Add(button);
+            }
+            foreach (Stack stack in pages)
+            {
+                stack.Dock = DockStyle.Fill;
+                main.Controls.Add(stack);
+                stack.BringToFront();
+            }
+            Controls.Add(side);
+            Controls.Add(main);
+            main.BringToFront();
+            Page = 0;
         }
 
-        static Label Note(string text, int top, int height = 40)
+        protected override void OnHandleCreated(EventArgs e)
         {
-            return new Label { Text = text, Left = 16, Top = top, Width = 510, Height = height, ForeColor = SystemColors.GrayText };
+            base.OnHandleCreated(e);
+            Theme.StyleTitleBar(Handle, Theme.App.Dark);
         }
 
-        CheckBox Check(TabPage page, CheckBox box, string text, int top, string key)
+        protected override void Dispose(bool disposing)
         {
-            box.Text = text; box.Left = 16; box.Top = top; box.Width = 510;
-            box.CheckedChanged += delegate { if (!updating) app.SettingsCommand("set", "key", key, "value", box.Checked); };
-            page.Controls.Add(box);
+            base.Dispose(disposing);
+            // Once only: Dispose can run more than once, and the raw icon handle must be destroyed once.
+            if (disposing && appIcon != null) { Theme.FreeIcon(appIcon); appIcon = null; }
+        }
+
+        void AddPage(string title, string glyph, Stack stack)
+        {
+            int index = pages.Count;
+            var button = new NavButton(title, glyph);
+            button.Click += delegate { Page = index; };
+            nav.Add(button);
+            pages.Add(stack);
+            titles.Add(title);
+        }
+
+        /// The page shown, by its place in the list.
+        public int Page
+        {
+            get { return page; }
+            set
+            {
+                if (value < 0 || value >= pages.Count || value == page) return;
+                page = value;
+                for (int i = 0; i < pages.Count; i++)
+                {
+                    pages[i].Visible = i == value;
+                    nav[i].Selected = i == value;
+                }
+                pageTitle.Text = titles[value];
+            }
+        }
+
+        void Send(string name, params object[] pairs)
+        {
+            if (app != null) app.SettingsCommand(name, pairs);
+        }
+
+        ToggleSwitch Bind(ToggleSwitch box, string key)
+        {
+            box.CheckedChanged += delegate { if (!updating) Send("set", "key", key, "value", box.Checked); };
             return box;
         }
 
-        void Number(TabPage page, NumericUpDown box, string text, int top, int min, int max, int step, string key, string unit)
+        Stepper Bind(Stepper box, int min, int max, int step, string key, string unit, string zero = null)
         {
-            page.Controls.Add(new Label { Text = text, Left = 16, Top = top + 3, Width = 330 });
-            box.Left = 350; box.Top = top; box.Width = 80; box.Minimum = min; box.Maximum = max; box.Increment = step;
-            box.ValueChanged += delegate { if (!updating) app.SettingsCommand("set", "key", key, "value", (double)box.Value); };
-            page.Controls.Add(box);
-            page.Controls.Add(new Label { Text = unit, Left = 436, Top = top + 3, Width = 80 });
+            box.Minimum = min; box.Maximum = max; box.Increment = step; box.Unit = unit;
+            if (zero != null) box.Format = delegate(decimal v) { return v == 0 ? zero : v.ToString("0.##") + " " + unit; };
+            box.ValueChanged += delegate { if (!updating) Send("set", "key", key, "value", (double)box.Value); };
+            return box;
         }
 
-        TabPage GeneralTab()
+        Stack GeneralPage()
         {
-            var page = new TabPage("一般");
-            Check(page, autoBox, "エージェントの作業中はスリープさせない（自動モード）", 16, "autoEnabled");
-            Check(page, loginBox, "ログイン時に起動", 44, "startAtLogin");
-            page.Controls.Add(Note("エージェントの作業中は、蓋を閉じても PC は起きたままです（内蔵ディスプレイは Windows が消します）。全員があなたの返事待ちになると、蓋を閉じたときの動作（電源オプション）に従ってスリープします。「何もしない」なら起きたままです。終了すると通常のスリープに戻ります。", 76, 64));
-            Number(page, batteryFloor, "バッテリーがこの値以下ならスリープを許可", 168, 0, 50, 5, "batteryFloorPercent", "%");
-            page.Controls.Add(Note("Windows には macOS の熱状態に相当する API がないため、温度による制限はありません。", 200));
-            return page;
+            var stack = new Stack();
+            stack.Controls.Add(statusCard);
+            stack.Controls.Add(new SectionLabel("動作"));
+            stack.Controls.Add(new SettingCard("エージェントの作業中はスリープさせない",
+                "自動モード。作業中は蓋を閉じても PC は起きたままで、内蔵ディスプレイは Windows が消します。",
+                Theme.Cup, Bind(autoBox, "autoEnabled")));
+            stack.Controls.Add(new SettingCard("ログイン時に起動", "サインインすると通知領域で動き始めます。",
+                Theme.Power, Bind(loginBox, "startAtLogin")));
+            stack.Controls.Add(new NoteLabel("全員があなたの返事待ちになると、蓋を閉じたときの動作（電源オプション）に従ってスリープします。そこが「何もしない」なら起きたままです。終了すると通常のスリープに戻ります。"));
+            stack.Controls.Add(new SectionLabel("バッテリー"));
+            stack.Controls.Add(new SettingCard("この残量以下ならスリープを許可",
+                "バッテリーで動いているときだけ。オフにすると、切れるまで作業を続けます。",
+                Theme.Battery, Bind(batteryFloor, 0, 50, 5, "batteryFloorPercent", "%", "オフ")));
+            stack.Controls.Add(new NoteLabel("Windows には macOS の熱状態に相当する API がないため、温度による制限はありません。"));
+            return stack;
         }
 
-        TabPage TimingTab()
+        Stack TimingPage()
         {
-            var page = new TabPage("タイミング");
-            page.Controls.Add(new Label { Text = "作業が終わったとき", Left = 16, Top = 16, Width = 500, Font = new Font(Font, FontStyle.Bold) });
-            Number(page, sleepGrace, "待機になってからスリープまで", 44, 0, 300, 5, "sleepGraceSeconds", "秒");
-            Number(page, notifyTimeout, "Claude の通知を待つ最長時間", 76, 0, 300, 10, "notifyTimeoutSeconds", "秒");
-            page.Controls.Add(Note("Claude Code は止まってから約 1 分後に「入力待ち」の通知を送ります。それを待つと、スリープ前に通知がスマートフォンに届きます。Codex にはこの待ち時間はありません。", 108, 48));
-            page.Controls.Add(new Label { Text = "止まったセッション", Left = 16, Top = 168, Width = 500, Font = new Font(Font, FontStyle.Bold) });
-            Number(page, workingStale, "作業中で報告がないセッションを無視するまで", 196, 5, 240, 5, "workingStaleMinutes", "分");
-            Number(page, backgroundStale, "バックグラウンドだけのセッションを無視するまで", 228, 5, 480, 5, "backgroundStaleMinutes", "分");
-            page.Controls.Add(Note("この時間だけ何も報告しないセッションは、クラッシュした可能性があるため PC を起こしておく対象から外します。", 260));
-            var reset = new Button { Text = "初期設定に戻す", Left = 16, Top = 310, Width = 140 };
-            reset.Click += delegate { app.SettingsCommand("restoreTimingDefaults"); };
-            page.Controls.Add(reset);
-            return page;
+            var stack = new Stack();
+            stack.Controls.Add(new SectionLabel("作業が終わったとき"));
+            stack.Controls.Add(new SettingCard("待機になってからスリープまで",
+                "全員が返事待ちになってから、スリープを許可するまでの猶予です。",
+                Theme.Moon, Bind(sleepGrace, 0, 300, 5, "sleepGraceSeconds", "秒")));
+            stack.Controls.Add(new SettingCard("Claude の通知を待つ最長時間",
+                "Claude Code は止まってから約 1 分後に「入力待ち」の通知を送ります。待つと、スリープ前に通知がスマートフォンに届きます。Codex にはこの待ち時間はありません。",
+                Theme.History, Bind(notifyTimeout, 0, 300, 10, "notifyTimeoutSeconds", "秒", "オフ")));
+            stack.Controls.Add(new SectionLabel("止まったセッション"));
+            stack.Controls.Add(new SettingCard("作業中で報告がないセッションを無視するまで", null,
+                Theme.Activity, Bind(workingStale, 5, 240, 5, "workingStaleMinutes", "分")));
+            stack.Controls.Add(new SettingCard("バックグラウンドだけのセッションを無視するまで", null,
+                Theme.Layers, Bind(backgroundStale, 5, 480, 5, "backgroundStaleMinutes", "分")));
+            stack.Controls.Add(new NoteLabel("この時間だけ何も報告しないセッションは、クラッシュした可能性があるため PC を起こしておく対象から外します。"));
+            var reset = new FlatButton("初期設定に戻す", false, Theme.Refresh);
+            reset.Click += delegate { Send("restoreTimingDefaults"); };
+            stack.Controls.Add(new ButtonRow(reset));
+            return stack;
         }
 
-        TabPage LimitsTab()
+        Stack LimitsPage()
         {
-            var page = new TabPage("使用量の上限");
-            Check(page, wakeBox, "使用量のリセット前に PC をスリープ解除する", 16, "wakeForQuotaReset");
-            page.Controls.Add(Note("Claude Code や Codex がサブスクリプションの上限で止まると、PC はスリープし、上限がリセットされる 2 分前にスリープ解除されるので、セッションを続けられます。", 44, 48));
-            Check(page, switchBox, "使用上限で別のアカウントに切り替える (T3 Code)", 104, "switchAccountAtLimit");
-            switchNote.Left = 16; switchNote.Top = 132; switchNote.Width = 510; switchNote.Height = 48; switchNote.ForeColor = SystemColors.GrayText;
-            page.Controls.Add(switchNote);
-            accountsLabel.Left = 16; accountsLabel.Top = 184; accountsLabel.Width = 510; accountsLabel.Height = 60;
-            page.Controls.Add(accountsLabel);
-            resumeBox.Text = "リセット後に自動で再開する (T3 Code の autoResumeLimitedThreads)";
-            resumeBox.Left = 16; resumeBox.Top = 252; resumeBox.Width = 510;
-            resumeBox.CheckedChanged += delegate { if (!updating) app.SettingsCommand("autoResume", "value", resumeBox.Checked); };
-            page.Controls.Add(resumeBox);
-            return page;
+            var stack = new Stack();
+            stack.Controls.Add(new SectionLabel("使用量のリセット"));
+            stack.Controls.Add(new SettingCard("リセット前に PC をスリープ解除する",
+                "Claude Code や Codex がサブスクリプションの上限で止まると、PC はスリープし、上限がリセットされる 2 分前に起きるので、セッションを続けられます。",
+                Theme.Sun, Bind(wakeBox, "wakeForQuotaReset")));
+            stack.Controls.Add(new SectionLabel("T3 Code"));
+            switchCard = new SettingCard("使用上限で別のアカウントに切り替える", SwitchDefault, Theme.Sync, Bind(switchBox, "switchAccountAtLimit"));
+            stack.Controls.Add(switchCard);
+            accountsCard = new SettingCard("切り替え先", "", Theme.Key, null) { Joined = true, Hidden = true };
+            stack.Controls.Add(accountsCard);
+            resumeBox.CheckedChanged += delegate { if (!updating) Send("autoResume", "value", resumeBox.Checked); };
+            stack.Controls.Add(new SettingCard("リセット後に自動で再開する", "T3 Code の autoResumeLimitedThreads 設定を切り替えます。", Theme.Refresh, resumeBox));
+            return stack;
         }
 
-        TabPage IntegrationsTab()
+        Stack IntegrationsPage()
         {
-            var page = new TabPage("連携");
-            hookPanel.Left = 8; hookPanel.Top = 8; hookPanel.Width = 530; hookPanel.Height = 250;
-            hookPanel.FlowDirection = FlowDirection.TopDown; hookPanel.WrapContents = false; hookPanel.AutoScroll = true;
-            page.Controls.Add(hookPanel);
-            var add = new Button { Text = "別のアカウントの設定フォルダを追加…", Left = 16, Top = 264, Width = 260 };
+            var add = new FlatButton("フォルダを選択…", false, Theme.Folder);
             add.Click += delegate
             {
                 using (var dialog = new FolderBrowserDialog { Description = "CLAUDE_CONFIG_DIR として使っている Claude の設定フォルダ" })
                 {
                     if (dialog.ShowDialog(this) == DialogResult.OK)
-                        app.SettingsCommand("hooks", "action", "install", "tool", "claude", "path", Path.Combine(dialog.SelectedPath, "settings.json"));
+                        Send("hooks", "action", "install", "tool", "claude", "path", Path.Combine(dialog.SelectedPath, "settings.json"));
                 }
             };
-            page.Controls.Add(add);
-            t3Label.Left = 16; t3Label.Top = 300; t3Label.Width = 510; t3Label.Height = 40;
-            page.Controls.Add(t3Label);
-            powerLabel.Left = 16; powerLabel.Top = 344; powerLabel.Width = 510; powerLabel.Height = 40;
-            page.Controls.Add(powerLabel);
-            var log = new Button { Text = "ログを開く", Left = 16, Top = 392, Width = 100 };
-            log.Click += delegate { app.OpenLog(); };
-            var refresh = new Button { Text = "更新", Left = 124, Top = 392, Width = 100 };
-            refresh.Click += delegate { app.SettingsCommand("refresh"); };
-            page.Controls.Add(log);
-            page.Controls.Add(refresh);
-            return page;
+            addFolderCard = new SettingCard("別のアカウントを追加", "CLAUDE_CONFIG_DIR に使っている設定フォルダにフックを追加します。", Theme.Folder, add);
+            hookNote = new NoteLabel("フックを追加・変更したら、開いている Claude Code を再起動し、Codex では /hooks で信頼してください。");
+            t3Card = new SettingCard("会話の追跡", "", Theme.Link, null);
+            powerCard = new SettingCard("蓋を閉じたときの動作", "", Theme.Laptop, null);
+            var log = new FlatButton("ログを開く", false, Theme.Document);
+            log.Click += delegate { if (app != null) app.OpenLog(); };
+            var refresh = new FlatButton("更新", false, Theme.Refresh);
+            refresh.Click += delegate { Send("refresh"); };
+            integrationButtons = new ButtonRow(log, refresh);
+            hookSignature = null;
+            UpdateHooks(null);
+            return integrations;
         }
 
         static object Get(Dictionary<string, object> map, string key)
@@ -1279,17 +1473,16 @@ namespace AgentLidClosed
             return value is bool && (bool)value;
         }
 
-        static decimal Clamp(NumericUpDown box, object value)
+        static decimal Clamp(Stepper box, object value)
         {
             decimal v = value == null ? box.Minimum : Convert.ToDecimal(value);
             return Math.Max(box.Minimum, Math.Min(box.Maximum, v));
         }
 
-        /// For checking the layout without a screen: draws each tab of the window, filled from a
+        /// For checking the layout without a screen: draws each page of the window, filled from a
         /// status.json, into PNG files.
         public static int Render(string statusFile, string outputDir)
         {
-            Application.EnableVisualStyles();
             var status = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(statusFile, Encoding.UTF8)) as Dictionary<string, object>;
             using (var form = new SettingsForm(null))
             {
@@ -1298,10 +1491,9 @@ namespace AgentLidClosed
                 form.ShowInTaskbar = false;
                 form.Show();
                 form.Update(status);
-                var tabs = (TabControl)form.Controls[0];
-                for (int i = 0; i < tabs.TabCount; i++)
+                for (int i = 0; i < form.pages.Count; i++)
                 {
-                    tabs.SelectedIndex = i;
+                    form.Page = i;
                     Application.DoEvents();
                     using (var bitmap = new Bitmap(form.Width, form.Height))
                     {
@@ -1318,37 +1510,52 @@ namespace AgentLidClosed
             updating = true;
             try
             {
+                string icon = Get(status, "icon") as string;
+                var detail = new List<string>();
+                foreach (object line in (Get(status, "detail") as object[]) ?? new object[0]) if (line is string) detail.Add((string)line);
+                statusCard.SetState(TrayApp.GlyphFor(icon), icon == "warning", (Get(status, "headline") as string) ?? "", string.Join("\n", detail));
                 var s = Get(status, "settings") as Dictionary<string, object>;
                 autoBox.Checked = Bool(s, "autoEnabled");
                 loginBox.Checked = Bool(s, "startAtLogin");
                 wakeBox.Checked = Bool(s, "wakeForQuotaReset");
                 switchBox.Checked = Bool(s, "switchAccountAtLimit");
-                if (!batteryFloor.Focused) batteryFloor.Value = Clamp(batteryFloor, Get(s, "batteryFloorPercent"));
-                if (!sleepGrace.Focused) sleepGrace.Value = Clamp(sleepGrace, Get(s, "sleepGraceSeconds"));
-                if (!notifyTimeout.Focused) notifyTimeout.Value = Clamp(notifyTimeout, Get(s, "notifyTimeoutSeconds"));
-                if (!workingStale.Focused) workingStale.Value = Clamp(workingStale, Get(s, "workingStaleMinutes"));
-                if (!backgroundStale.Focused) backgroundStale.Value = Clamp(backgroundStale, Get(s, "backgroundStaleMinutes"));
+                // Sync keeps digits being typed in a stepper and sends nothing back.
+                batteryFloor.Sync(Clamp(batteryFloor, Get(s, "batteryFloorPercent")));
+                sleepGrace.Sync(Clamp(sleepGrace, Get(s, "sleepGraceSeconds")));
+                notifyTimeout.Sync(Clamp(notifyTimeout, Get(s, "notifyTimeoutSeconds")));
+                workingStale.Sync(Clamp(workingStale, Get(s, "workingStaleMinutes")));
+                backgroundStale.Sync(Clamp(backgroundStale, Get(s, "backgroundStaleMinutes")));
                 string reason = Get(status, "switchUnavailableReason") as string;
                 switchBox.Enabled = reason == null;
-                switchNote.Text = reason ?? "ある会話が 1 つのアカウントの上限に達すると、リセットを待たずに同じツールの別のアカウントですぐに続けます。";
-                accountsLabel.Text = (Get(status, "switchAccountsText") as string) ?? "";
+                switchCard.Description = reason ?? SwitchDefault;
+                string accounts = ((Get(status, "switchAccountsText") as string) ?? "").Trim();
+                if (accounts.StartsWith("切替先: ")) accounts = accounts.Substring("切替先: ".Length);
+                accountsCard.Description = accounts;
+                accountsCard.Hidden = accounts.Length == 0;
                 object auto = Get(status, "autoResume");
                 resumeBox.Enabled = Bool(status, "t3Installed");
                 resumeBox.Checked = auto is bool && (bool)auto;
-                t3Label.Text = "T3 Code: " + ((Get(status, "t3Text") as string) ?? "");
-                powerLabel.Text = "電源: " + ((Get(status, "powerText") as string) ?? "");
+                t3Card.Description = (Get(status, "t3Text") as string) ?? "";
+                powerCard.Description = (Get(status, "powerText") as string) ?? "";
                 UpdateHooks(Get(status, "integrations") as object[]);
+                foreach (Stack stack in pages) stack.PerformLayout();
             }
             finally { updating = false; }
         }
 
+        /// Rebuilds the Integrations page when the hook files change: a card per file, grouped by tool.
         void UpdateHooks(object[] files)
         {
             files = files ?? new object[0];
             string signature = new JavaScriptSerializer().Serialize(files);
             if (signature == hookSignature) return;
             hookSignature = signature;
-            hookPanel.Controls.Clear();
+            integrations.SuspendLayout();
+            integrations.Controls.Clear();
+            foreach (Control old in hookControls) old.Dispose();
+            hookControls.Clear();
+            var p = Theme.App;
+            bool claudeShown = false;
             string currentTool = null;
             foreach (object item in files)
             {
@@ -1357,21 +1564,41 @@ namespace AgentLidClosed
                 string tool = Get(file, "tool") as string;
                 if (tool != currentTool)
                 {
+                    if (currentTool == "claude") integrations.Controls.Add(addFolderCard);
                     currentTool = tool;
+                    if (tool == "claude") claudeShown = true;
                     string installed = Bool(file, "toolInstalled") ? "" : "（見つかりません）";
-                    hookPanel.Controls.Add(new Label { Text = (tool == "codex" ? "Codex" : "Claude Code") + installed, Width = 500, Height = 22, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(0, 6, 0, 0) });
+                    var heading = new SectionLabel((tool == "codex" ? "Codex" : "Claude Code") + installed);
+                    hookControls.Add(heading);
+                    integrations.Controls.Add(heading);
                 }
-                var row = new FlowLayoutPanel { Width = 510, Height = 32, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
                 bool has = Bool(file, "hasHooks");
                 string path = Get(file, "path") as string;
-                row.Controls.Add(new Label { Text = (has ? "フックあり: " : "フックなし: ") + path, Width = 400, Height = 28, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft });
-                var button = new Button { Text = has ? "削除" : "追加", Width = 80 };
+                var button = new FlatButton(has ? "削除" : "追加", !has);
                 string toolName = tool;
-                button.Click += delegate { app.SettingsCommand("hooks", "action", has ? "uninstall" : "install", "tool", toolName, "path", path); };
-                row.Controls.Add(button);
-                hookPanel.Controls.Add(row);
+                button.Click += delegate { Send("hooks", "action", has ? "uninstall" : "install", "tool", toolName, "path", path); };
+                var card = new SettingCard(path ?? "", has ? "フックあり" : "フックなし", has ? Theme.Done : Theme.Dashed, button);
+                card.SetGlyph(has ? Theme.Done : Theme.Dashed, has ? p.Good : p.SubText);
+                hookControls.Add(card);
+                integrations.Controls.Add(card);
             }
-            hookPanel.Controls.Add(new Label { Text = "フックを追加・変更したら、開いている Claude Code を再起動し、Codex では /hooks で信頼してください。", Width = 500, Height = 36, ForeColor = SystemColors.GrayText });
+            if (currentTool == "claude") integrations.Controls.Add(addFolderCard);
+            if (!claudeShown)
+            {
+                var heading = new SectionLabel("Claude Code");
+                hookControls.Add(heading);
+                integrations.Controls.Add(heading);
+                integrations.Controls.Add(addFolderCard);
+            }
+            integrations.Controls.Add(hookNote);
+            integrations.Controls.Add(new SectionLabel("T3 Code"));
+            hookControls.Add(integrations.Controls[integrations.Controls.Count - 1]);
+            integrations.Controls.Add(t3Card);
+            integrations.Controls.Add(new SectionLabel("電源"));
+            hookControls.Add(integrations.Controls[integrations.Controls.Count - 1]);
+            integrations.Controls.Add(powerCard);
+            integrations.Controls.Add(integrationButtons);
+            integrations.ResumeLayout(true);
         }
     }
 }
