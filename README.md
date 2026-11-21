@@ -1,14 +1,15 @@
 # Agent Lid Closed
 
-**Close your MacBook's lid while Claude Code, Codex or T3 Code works. Your Mac stays awake with the screen off, then sleeps when every agent is waiting for you.**
+**Close your MacBook's lid while Claude Code, Codex or T3 Code works. Your Mac stays awake with the screen off, then sleeps when every agent is waiting for you.** Also available [for Windows](#windows).
 
 [![Latest release](https://img.shields.io/github/v/release/Jin-hiroo/agent-lid-closed)](https://github.com/Jin-hiroo/agent-lid-closed/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Requires macOS 14 or later](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#install)
+[![Windows 10 or 11](https://img.shields.io/badge/Windows-10%20%C2%B7%2011-0078D4?logo=windows&logoColor=white)](windows/README.md)
 [![Builds with Swift 6.2 or later](https://img.shields.io/badge/Swift-6.2%2B-F05138?logo=swift&logoColor=white)](Package.swift)
 [![Claude Code, Codex and T3 Code](https://img.shields.io/badge/agents-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20T3%20Code-417E68)](#which-apps-are-tracked)
 
-[Install with AI](#tldr-install-with-an-ai-agent) · [Install](#install) · [Update](#updating) · [Usage](#usage) · [How it works](#how-it-works) · [Settings](#settings) · [Limits](#limits)
+[Install with AI](#tldr-install-with-an-ai-agent) · [Install](#install) · [Update](#updating) · [Usage](#usage) · [How it works](#how-it-works) · [Settings](#settings) · [Limits](#limits) · [Windows](#windows)
 
 <p>
   <a href="docs/images/menu.png"><img src="docs/images/menu.png" alt="The Agent Lid Closed menu with the lid closed: it is keeping the Mac awake with the display off while a Codex session and a Claude session are working." width="368"></a>
@@ -18,7 +19,7 @@ _The menu with the lid closed: a Codex and a Claude session are working, so the 
 
 ## TL;DR: install with an AI agent
 
-Paste this into Claude Code, Codex or T3 Code:
+Paste this into Claude Code, Codex or T3 Code on your Mac (on Windows, use the prompt in [windows/README.md](windows/README.md#tldr-install-with-an-ai-agent)):
 
 ```text
 Install Agent Lid Closed from https://github.com/Jin-hiroo/agent-lid-closed.
@@ -274,6 +275,17 @@ The same preferences can be scripted with `defaults write local.AgentLidClosed <
 - **Private brightness API.** Apple silicon brightness control uses `DisplayServices`. If a future macOS removes that API, dimming is skipped and a failure is logged.
 - **Other hosts and remote work.** Only hosts that load and run the configured local hooks are visible, plus T3 Code. Cloud sessions, the Claude desktop app's Chat and Cowork, and hosts that skip hooks are not tracked; a running process alone does not imply an active turn. See [Which apps are tracked](#which-apps-are-tracked).
 
+## Windows
+
+A Windows version with the same features and rules lives in [`windows/`](windows/README.md). It keeps the PC awake while Claude Code, Codex or T3 Code works, lid closed included, wakes it before usage resets, switches T3 Code accounts at a usage limit and turns on T3's auto-resume unless you've turned it off. It has a notification-area icon, menu and Settings window (in Japanese), and needs Windows 10 or 11 and Node.js 22.16 or later, but no administrator rights.
+
+```powershell
+git clone https://github.com/Jin-hiroo/agent-lid-closed.git; cd agent-lid-closed
+powershell -ExecutionPolicy Bypass -File .\windows\install.ps1
+```
+
+The main differences from macOS: once every agent is waiting with the lid closed and no external display is attached, it sleeps or hibernates if that's what the power plan's lid action says, and otherwise leaves the PC as it is (it stays awake for *Do nothing*); Windows turns the built-in display off by itself; and there is no heat limit. Sleeping from the tray and waking from a timer haven't been tested on real hardware yet. See [windows/README.md](windows/README.md) for installing, usage, settings and how it works.
+
 ## Development
 
 ```sh
@@ -295,6 +307,8 @@ AGENT_LID_DRY_RUN=1 AGENT_LID_FAKE_LID=closed AGENT_LID_STATE_DIR=/tmp/agent-lid
 The scripts fall back to direct `swiftc` builds if SwiftPM cannot start. With a mismatched local SDK, set `AGENT_LID_SDK` to a compatible SDK path for that fallback. For example, this machine's Swift 6.3 compiler works with `AGENT_LID_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`.
 
 In a dry run, `AGENT_LID_OPEN_SETTINGS=1` opens Settings at launch, `AGENT_LID_SETTINGS_TAB=0…3` picks its tab, and `AGENT_LID_HOME` points Integrations at another home folder. Add and Remove change only files under `AGENT_LID_HOME`, and only with `AGENT_LID_STATE_DIR` set; otherwise they are logged. Power and brightness changes are logged. Create `/tmp/agent-lid/lid-open` to simulate opening the lid. The old `CLAUDE_LID_STATE_DIR`, `CLAUDE_LID_DRY_RUN` and `CLAUDE_LID_FAKE_LID` variables remain accepted.
+
+For the Windows version, run `node --test --test-concurrency=1 "windows/test/*.test.mjs"` and build with `windows\build.ps1`; see [windows/README.md](windows/README.md#development).
 
 ## License
 
