@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en" data-type="software" data-radius="soft" data-ground="sky" data-buttons="solid" data-motion>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent Lid Closed: sleep control for AI coding agents on a MacBook</title>
+<meta name="description" content="A free menu bar app that keeps a closed MacBook awake while Claude Code, Codex or T3 Code works, and lets it sleep when they wait.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Agent Lid Closed: sleep control for AI coding agents on a MacBook">
+<meta property="og:description" content="Keeps a closed MacBook awake while Claude Code, Codex or T3 Code works.">
+<meta property="og:image" content="https://agent-lid-closed.belebt.com/share.jpg">
+<meta property="og:url" content="https://agent-lid-closed.belebt.com/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0d14">
+<link rel="canonical" href="https://agent-lid-closed.belebt.com/">
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/system.css">
+<link rel="stylesheet" href="assets/ui/cards.css">
+<link rel="stylesheet" href="assets/motion/motion.css">
+<link rel="stylesheet" href="assets/backgrounds/backgrounds.css">
+<link rel="stylesheet" href="assets/layout/layout.css">
+<link rel="stylesheet" href="assets/icons/icon.css">
+<style>
+:root {
+  --p-bg: #0a0d14; --p-surface: #131824; --p-ink: #e9edf3; --p-muted: #8891a1;
+  --p-accent: #5ab9fc; --p-accent-ink: #0a0d14; --p-action: #5ab9fc; --p-action-ink: #0a0d14;
+  --p-inv-bg: #e9edf3; --p-inv-surface: #d7dbe1; --p-inv-ink: #0a0d14; --p-inv-muted: #54575f;
+  --p-inv-accent: #0a0d14; --p-inv-accent-ink: #e9edf3; --p-inv-action: #0a0d14; --p-inv-action-ink: #e9edf3;
+  --font-display: "Geist", system-ui, sans-serif;
+  --font-text: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display-weight: 500;
+  --display-tracking: -0.035em;
+  --display-tracking-xl: -0.045em;
+}
+</style>
+<link rel="stylesheet" href="assets/ui/base.css">
+<link rel="stylesheet" href="assets/ui/window/fragment.css">
+<link rel="stylesheet" href="assets/ui/terminal-run/fragment.css">
+<link rel="stylesheet" href="assets/ui/toggles/fragment.css">
+<link rel="stylesheet" href="assets/ui/notify/fragment.css">
+<link rel="stylesheet" href="assets/ui/checklist/fragment.css">
+<link rel="stylesheet" href="assets/diagrams/diagram.css">
+<script>document.documentElement.classList.add('m-enter');setTimeout(()=>document.documentElement.classList.add('m-enter-done'),700)</script>
+<script src="assets/backgrounds/backgrounds.js"></script>
+<script>document.documentElement.classList.add('mo-js');setTimeout(()=>document.documentElement.classList.add('mo-safe'),2500)</script>
+<link rel="modulepreload" href="assets/moments/moments.js">
+<link rel="modulepreload" href="assets/moments/lib.js">
+<link rel="modulepreload" href="assets/moments/word-highlight/moment.js">
+<link rel="modulepreload" href="assets/moments/marquee-row/moment.js">
+<style>
+  /* the macOS menu bar and the app's menu, drawn as live HTML inside the hero's frame */
+  .mb { width: 680px; font: 400 14px/20px var(--font-text); color: #1d1f24; }
+  .mb__bar { display: flex; align-items: center; justify-content: flex-end; gap: 18px; height: 32px; padding: 0 16px; border-radius: 10px 0 0 0; background: #f4f6f9; border: 1px solid rgba(20, 24, 32, .12); border-right: 0; }
+  .mb__bar svg { width: 16px; height: 16px; fill: none; stroke: #1d1f24; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .mb__cup { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 24px; border-radius: 6px; background: rgba(20, 24, 32, .12); }
+  .mb__time { font-variant-numeric: tabular-nums; }
+  .mb__menu { width: 372px; margin: 6px 0 0 168px; padding: 6px; border-radius: 12px; background: #f7f8fa; border: 1px solid rgba(20, 24, 32, .14); box-shadow: 0 18px 40px rgba(10, 14, 24, .28), 0 2px 6px rgba(10, 14, 24, .12); }
+  .mb__item { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px 0 28px; border-radius: 6px; white-space: nowrap; position: relative; }
+  .mb__item--dim { color: #6b7280; }
+  .mb__item--on::before { content: ""; position: absolute; left: 10px; top: 9px; width: 9px; height: 5px; border-left: 1.6px solid currentColor; border-bottom: 1.6px solid currentColor; transform: rotate(-45deg); }
+  .mb__item--sel { background: #2f7bd8; color: #fff; }
+  .mb__key { margin-left: auto; color: #6b7280; }
+  .mb__item--sel .mb__key { color: rgba(255, 255, 255, .8); }
+  .mb__sep { height: 1px; margin: 5px 10px; background: rgba(20, 24, 32, .12); }
+  .hero__media .stage > .at-corner { --ax: 48px; --ay: 48px; }
+  @media (max-width: 1279px) { .hero__media .stage > .at-corner { --ax: 32px; --ay: 32px; } .mb__menu { margin-left: 120px; } }
+  @media (max-width: 1023px) { .mb__menu { margin-left: 168px; } }
+  @media (max-width: 639px) {
+    .hero__media .stage > .at-corner { left: 16px; right: auto; top: 16px; }
+    .mb { width: 520px; font-size: 13px; }
+    .mb__menu { width: 320px; margin-left: 0; }
+    .mb__bar { justify-content: flex-start; }
+    .hero__media .ly-float { display: none; }
+  }
+
+  /* the product: the sessions list beside the status command, one window across the wrap (app-frame) */
+  .app.ui { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); margin-top: var(--s-7); background: var(--u-bg); border: 1px solid var(--u-border); border-radius: var(--u-r); box-shadow: var(--u-shadow); }
+  .app > .app__pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .app > .app__pane + .app__pane { border-left: 1px solid var(--u-line); }
+  .app > .app__pane > .ui-panel { width: 100%; border: 0; border-radius: 0; box-shadow: none; }
+  .app > .app__pane::after { content: ""; position: absolute; inset: auto 0 0 0; height: 64px; background: linear-gradient(transparent, var(--u-bg)); pointer-events: none; }
+  @container ui-win (min-width: 540px) { .app .ui-win__cols, .app .ui-win__row { grid-template-columns: 20px 96px minmax(0, 1fr) 112px; } }
+  .app .ui-win__row > img { width: 20px; height: 20px; }
+  .app .ui-term { height: 100%; }
+  .app .ui-term__screen { max-height: none; }
+  @media (min-width: 1024px) and (max-width: 1279px) { .app.ui { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); } }
+  @media (max-width: 1023px) {
+    .app.ui { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .app > .app__pane--list { max-height: 360px; }
+    .app > .app__pane--list::after { display: none; }
+    .app .ui-win__side { display: none; }
+    .app .ui-win__body { grid-template-columns: minmax(0, 1fr); }
+    .app > .app__pane + .app__pane { border-left: 0; border-top: 1px solid var(--u-line); }
+  }
+  @media (max-width: 639px) {
+    .app.ui { grid-template-rows: minmax(0, 1fr); }
+    .app > .app__pane--list { display: none; }
+    .app > .app__pane + .app__pane { border-top: 0; }
+  }
+
+  /* the four rules: one panel height for the group */
+  #how .panel { --p-h: 300px; }
+  @media (max-width: 639px) { #how .panel { --p-h: 180px; } }
+
+  /* the settings window in the usage-limits split */
+  #limits .ui-toggles { width: 520px; }
+
+  /* the tools it follows: a real icon beside each name */
+  .tools .rows__name { display: inline-flex; align-items: center; gap: var(--s-3); }
+  .tools .rows__name img { width: 24px; height: 24px; flex: none; }
+  .tools .rows > li > p { padding-left: 36px; }
+
+  /* the install commands, set as a terminal in each card's panel */
+  #install .panel { --p-h: 380px; }
+  .cmd { position: absolute; inset: 24px 24px auto 24px; display: grid; gap: 12px; padding: 16px 16px 20px; border-radius: 12px; background: #0d1119; color: #e9edf3; border: 1px solid rgba(233, 237, 243, .12); font: 400 14px/22px var(--font-mono); }
+  .cmd__head { display: flex; align-items: center; gap: 12px; color: #9aa3b2; font-size: 13px; }
+  .cmd__head .ui-dots { margin-right: 4px; }
+  .cmd__copy { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 12px; border-radius: 8px; border: 1px solid rgba(233, 237, 243, .18); background: transparent; color: #e9edf3; font: 500 13px/1 var(--font-text); cursor: pointer; }
+  .cmd__copy:hover { background: rgba(233, 237, 243, .08); }
+  .cmd__copy svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .cmd code { display: block; white-space: pre-wrap; word-break: break-word; font: inherit; }
+  .cmd code span { color: #5ab9fc; }
+  @media (max-width: 639px) { #install .panel { --p-h: 260px; } .cmd { inset: 16px 16px auto 16px; font-size: 13px; line-height: 20px; } }
+
+  /* the nav's main button keeps one word on a phone, so the bar holds the name, the button and the menu */
+  @media (max-width: 639px) { .nav__more { display: none; } }
+  @media (max-width: 359px) { .nav__bar > .nav__logo .mark { display: none; } }
+  /* a phone's prompt shows the folder alone, as zsh does, so the command keeps one line */
+  @media (max-width: 639px) { .app .ui-term__cwd .ui-term__up { display: none; } }
+  /* the Usage Limits settings stand on the page's lit ground, as every ground that holds UI */
+  #limits .frame { background: var(--ground-bg); border-color: transparent; }
+  /* a phone: the words and the settings stack, and the section grows to hold both */
+  @media (max-width: 639px) { #limits .wrap > .grid.fill { flex: 1 0 auto; } }
+  /* the hook events run along the foot of the tools section */
+  .tools .marquee { margin-top: auto; }
+  /* the Keep Mac Awake submenu under the questions' lead */
+  .faq__panel { --p-h: 300px; margin-top: var(--s-3); }
+  .faq__panel .ui-checks { width: 340px; }
+  @media (max-width: 639px) { .faq__panel { --p-h: 420px; } .faq__panel .ui-checks { width: auto; } }
+
+  /* the statement */
+  .statement .mo-wh__text { font: var(--display-weight) clamp(30px, 2.3vw + 18px, 52px)/1.16 var(--font-display); letter-spacing: var(--display-tracking); max-width: 26ch; }
+</style>
+</head>
+<body>
+<!-- type: software (site-kind software): a free, open-source macOS menu bar app (and a Windows port) for people who run AI coding agents
+     deal: hero split, nav nav-mega, close close-type, footer footer-dark, rhythm space, buttons solid, mark dots,
+           palette blue-black-cornflower (the near-black of a screen that has gone dark with the lid shut, the blue of the menu bar's selection),
+           type geist, lit ground sky, effect grain-gradient (the hero frame), no CSS grounds, no scene
+     moments: word-highlight in #why (the one statement: why a closed lid needs this),
+              marquee-row as the last row of #tools (the hook events it listens to; re-dealt from line-carries-colour, which needs a section on a new ground the space rhythm does not have)
+     motion: hero entrance (the name of the job first, then what to do); one loop in the hero frame (the ground drifts);
+             the status command re-runs in the app frame; the diagram pulses in #how; hover on every link and button -->
+<header class="nav">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="#top"><span class="mark" data-mark="dots" aria-hidden="true"></span>Agent Lid Closed</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item">
+        <a class="nav__link" href="#product">Product <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <div class="menu-col span-3">
+              <p class="t-label">Keeps it awake</p>
+              <a href="#product">Sessions<span>Every agent in one menu</span></a>
+              <a href="#how">Sleep rules<span>When the Mac may sleep</span></a>
+            </div>
+            <div class="menu-col span-3">
+              <p class="t-label">Usage limits</p>
+              <a href="#limits">Wake before resets<span>Two minutes before the reset</span></a>
+              <a href="#tools">Supported tools<span>Claude Code, Codex, T3 Code</span></a>
+            </div>
+            <a class="menu-card span-3 start-10" href="#faq">
+              <div class="panel">
+                <div class="stage stage--fade-br"><div class="at-corner" style="--ax:24px;--ay:24px">
+                  <div class="ui ui-panel ui-checks" role="img" aria-label="The Keep Mac Awake submenu, set for one hour">
+                    <div class="ui-checks__head"><div class="ui-title">Keep Mac Awake</div><span class="ui-spacer"></span><div class="ui-meta">1 h left</div></div>
+                    <ul class="ui-checks__list">
+                      <li class="ui-check"><span class="ui-check__label">Until I Turn It Off</span></li>
+                      <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">For 1 h</span></li>
+                    </ul>
+                  </div>
+                </div></div>
+              </div>
+              <span class="t-card">Keep Mac Awake by hand</span>
+              <span class="t-small muted">From 30 minutes up to 7 days</span>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="#limits">Limits</a></div>
+      <div class="nav__item"><a class="nav__link" href="#tools">Tools</a></div>
+      <div class="nav__item"><a class="nav__link" href="#install">Install</a></div>
+      <div class="nav__item"><a class="nav__link" href="#faq">Questions</a></div>
+    </nav>
+    <div class="nav__actions">
+      <a class="nav__link" href="https://github.com/Jin-hiroo/agent-lid-closed">GitHub</a>
+      <a class="btn btn--primary" href="#install"><span>Install<span class="nav__more"> on your Mac</span></span></a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero hero--split" data-enter aria-labelledby="hero-h">
+    <div class="wrap"><div class="hero-text grid hero__grid">
+      <div class="hero__text span-5">
+        <p class="hero__kicker"><span class="dot" aria-hidden="true"></span>Free and open source, for macOS 14 or later</p>
+        <h1 id="hero-h">MacBook sleep control for AI coding agents</h1>
+        <p class="hero__lead">Close the lid while Claude Code, Codex or T3 Code works. The Mac stays awake with the screen at 0%, then may sleep once every agent is waiting for you.</p>
+        <div class="btn-row"><a class="btn btn--primary" href="#install">Install on your Mac<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a><a class="btn btn--secondary" href="#how">See how it decides</a></div>
+      </div>
+      <div class="hero__media frame--lit span-6 start-7" data-fx="grain-gradient" data-fx-seed="7" role="img" aria-label="The Agent Lid Closed menu, open under its cup icon in the menu bar: a Codex and a Claude session are working, so the Mac stays awake with the lid closed and the display off.">
+        <div class="stage stage--fade-r"><div class="at-corner">
+          <div class="mb" aria-hidden="true">
+            <div class="mb__bar">
+              <span class="mb__cup"><svg viewBox="0 0 16 16"><path d="M3 5.5h8v4a3.5 3.5 0 0 1-3.5 3.5h-1A3.5 3.5 0 0 1 3 9.5z"/><path d="M11 6.5h1a2 2 0 0 1 0 4h-1"/><path d="M5.5 1.8v1.6M8 1.8v1.6"/></svg></span>
+              <svg viewBox="0 0 16 16"><path d="M2 6.5a9 9 0 0 1 12 0"/><path d="M4.3 9a5.5 5.5 0 0 1 7.4 0"/><circle cx="8" cy="11.8" r=".9" fill="#1d1f24"/></svg>
+              <svg viewBox="0 0 16 16"><rect x="1.5" y="4.5" width="11" height="7" rx="1.8"/><path d="M14.5 7v2"/><rect x="3" y="6" width="6" height="4" rx=".8" fill="#1d1f24" stroke="none"/></svg>
+              <span class="mb__time">Sun 02:14</span>
+            </div>
+            <div class="mb__menu">
+              <div class="mb__item mb__item--dim">Keeping your Mac awake: an agent is working</div>
+              <div class="mb__item mb__item--dim">Lid closed · system sleep disabled · display off</div>
+              <div class="mb__sep"></div>
+              <div class="mb__item mb__item--dim">Codex · api-server: working · 7 min</div>
+              <div class="mb__item mb__item--dim">Claude · photo-app: working · 21 min</div>
+              <div class="mb__sep"></div>
+              <div class="mb__item mb__item--on">Automatic Mode</div>
+              <div class="mb__item mb__item--on">Turn Display Off When Lid Closed</div>
+              <div class="mb__item mb__item--on mb__item--sel">Wake for Usage Resets</div>
+              <div class="mb__item">Keep Mac Awake<span class="mb__key">›</span></div>
+              <div class="mb__sep"></div>
+              <div class="mb__item">Settings…<span class="mb__key">⌘ ,</span></div>
+              <div class="mb__item">Open Log</div>
+              <div class="mb__sep"></div>
+              <div class="mb__item">Quit (restores normal sleep)<span class="mb__key">⌘ Q</span></div>
+            </div>
+          </div>
+        </div></div>
+        <div class="ly-float" aria-hidden="true">
+          <div class="ly-float__row"><span class="ly-live">Lid closed</span><span>Display 0%</span></div>
+          <div class="ly-float__title">2 agents working, sleep held</div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="section" id="product" aria-labelledby="product-h">
+    <div class="wrap">
+      <div class="grid">
+        <h2 id="product-h" class="span-5">Claude Code and Codex sessions, reported by hooks</h2>
+        <div class="span-6 start-7 stack-4">
+          <p class="t-lead">The installer adds hooks for Claude Code and Codex, and Settings shows each file that holds them; T3 Code is read directly. The status command prints every session in a terminal, with the decision under it.</p>
+          <a class="link" href="#tools">See which tools report</a>
+        </div>
+      </div>
+      <div class="ui app fill" role="img" aria-label="The Integrations tab of Agent Lid Closed’s Settings, listing the hook files of two Claude Code accounts and Codex, T3 Code tracked directly and sleep control set up, beside a terminal running agent-lid-hook status: three sessions working, two waiting, so the Mac is kept awake." data-ui-pause-host>
+        <div class="app__pane app__pane--list">
+          <div class="ui ui-panel ui-win">
+            <div class="ui-win__bar">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-win__crumb">Settings <i>/</i> <b>Integrations</b></span>
+            </div>
+            <div class="ui-win__body">
+              <nav class="ui-win__side" aria-hidden="true">
+                <span class="ui-win__nav"><svg class="ui-icon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6 5 5M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/></svg>General</span>
+                <span class="ui-win__nav"><svg class="ui-icon" viewBox="0 0 16 16"><circle cx="8" cy="9" r="5"/><path d="M8 6.5V9l1.6 1.2M6.5 2h3"/></svg>Timing</span>
+                <span class="ui-win__nav"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.5 11a5.5 5.5 0 1 1 11 0"/><path d="m8 11 2.5-3"/></svg>Usage Limits</span>
+                <span class="ui-win__nav is-on"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M6 2.5h4v3h3v4h-3v4H6v-4H3v-4h3z"/></svg>Integrations</span>
+              </nav>
+              <div class="ui-win__main">
+                <div class="ui-win__cols" aria-hidden="true"><span>Tool</span><span>File or part</span><span>Status</span></div>
+                <ul class="ui-win__rows">
+                  <li class="ui-win__row"><img data-icon="claude" src="assets/icons/claude.svg" alt=""><span class="ui-win__who">Claude Code</span><span class="ui-win__sub">~/.claude/settings.json</span><span class="ui-win__st is-you">Hooks added</span></li>
+                  <li class="ui-win__row"><img data-icon="claude" src="assets/icons/claude.svg" alt=""><span class="ui-win__who">Claude Code</span><span class="ui-win__sub">~/.claude-work/settings.json</span><span class="ui-win__st is-you">Hooks added</span></li>
+                  <li class="ui-win__row"><img data-icon="openai" src="assets/icons/openai.svg" alt="" class="ic-ink"><span class="ui-win__who">Codex</span><span class="ui-win__sub">~/.codex/hooks.json</span><span class="ui-win__st is-you">Hooks added</span></li>
+                  <li class="ui-win__row"><img data-icon="ui:messages-square" src="assets/icons/ui-messages-square.svg" alt=""><span class="ui-win__who">T3 Code</span><span class="ui-win__sub">Conversations</span><span class="ui-win__st is-done">Tracked directly</span></li>
+                  <li class="ui-win__row"><img data-icon="ui:moon" src="assets/icons/ui-moon.svg" alt=""><span class="ui-win__who">Power</span><span class="ui-win__sub">Sleep control</span><span class="ui-win__st is-done">Set up</span></li>
+                  <li class="ui-win__row"><img data-icon="ui:moon" src="assets/icons/ui-moon.svg" alt=""><span class="ui-win__who">Power</span><span class="ui-win__sub">Wake alarms</span><span class="ui-win__st is-done">Set up</span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="app__pane app__pane--open" data-ui-loop>
+          <div class="ui ui-panel ui-term" data-ui="terminal-run">
+            <div class="ui-term__head">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-term__title">agent-lid-closed</span>
+              <span class="ui-meta">zsh</span>
+              <span class="ui-spacer"></span>
+              <span class="ui-chip ui-chip--plain ui-term__branch">lid closed</span>
+            </div>
+            <div class="ui-term__screen" data-term-screen>
+              <div class="ui-term__track" data-term-track>
+                <div class="ui-term__ln ui-term__cmd"><span class="ui-term__cwd"><span class="ui-term__up">~/Applications/AgentLidClosed.app/Contents/</span>Helpers</span><span class="ui-term__sig">$</span><span class="ui-term__typed" data-term-cmd>./agent-lid-hook status</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><span class="ui-term__path">Claude · photo-app</span><span class="ui-term__n">working</span><span class="ui-term__t">21 min</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><span class="ui-term__path">Codex · api-server</span><span class="ui-term__n">working</span><span class="ui-term__t">7 min</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><span class="ui-term__path">Claude · docs</span><span class="ui-term__n">working</span><span class="ui-term__t">4 min</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><span class="ui-term__path">Codex · ios-app</span><span class="ui-term__n">waiting</span><span class="ui-term__t">12 min</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><span class="ui-term__path">Claude · infra</span><span class="ui-term__n">waiting</span><span class="ui-term__t">1 min</span></div>
+                <div class="ui-term__ln ui-term__done" data-term-out data-term-done><span class="ui-term__ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 8.3 2.4 2.4 4.6-5"/></svg></span><b>=&gt; keep the Mac awake</b></div>
+                <div class="ui-term__ln ui-term__cmd" data-term-next><span class="ui-term__cwd"><span class="ui-term__up">~/Applications/AgentLidClosed.app/Contents/</span>Helpers</span><span class="ui-term__sig">$</span><span class="ui-term__typed"></span><i class="ui-term__caret" aria-hidden="true"></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section g2" id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <div class="group">
+        <div class="section-head">
+          <h2 id="how-h">The Mac may sleep once the work is done. <span class="muted">Four rules decide when.</span></h2>
+        </div>
+        <div class="grid">
+          <article class="card card--row card--open span-6">
+            <h3>Follows each agent’s hooks</h3>
+            <p>Claude Code and Codex report every prompt, tool call and stop through hooks. T3 Code’s own database is read every 5 s.</p>
+            <div class="panel">
+              <div class="dg" data-diagram data-dg-still><script type="application/json">{"layout": "fanin", "alt": "Claude Code, Codex and T3 Code report to Agent Lid Closed, which holds sleep off while any of them works.", "sources": [{"label": "Claude Code", "icon": "claude", "sub": "Hooks"}, {"label": "Codex", "icon": "openai", "sub": "Hooks"}, {"label": "T3 Code", "icon": "ui:messages-square", "sub": "Read every 5 s"}], "target": {"label": "Agent Lid Closed", "icon": "ui:coffee"}, "then": {"label": "Sleep off", "icon": "ui:moon", "meta": "2 working"}}</script></div>
+            </div>
+          </article>
+          <article class="card card--row card--open span-6">
+            <h3>Turns the display off with the lid shut</h3>
+            <p>Brightness goes to 0% and comes back, at least 10%, when you open the lid. With an external display, macOS keeps control.</p>
+            <div class="panel">
+              <div class="stage stage--fade-b"><div class="at-right" style="--ax:32px;--ay:48px">
+                <div class="ui ui-panel ui-toggles" data-ui="toggles">
+                  <div class="ui-head">
+                    <svg class="ui-icon ui-toggles__ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="8" rx="1.5"/><path d="M5.5 13.5h5"/></svg>
+                    <div class="ui-title">Settings · General</div>
+                    <span class="ui-spacer"></span>
+                    <div class="ui-meta" data-tg-count>3 of 3 on</div>
+                  </div>
+                  <ul class="ui-toggles__list">
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">Keep the Mac awake while agents work</span><span class="ui-tg__sub">Automatic Mode</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="Keep the Mac awake while agents work" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">Turn the display off when the lid is closed</span><span class="ui-tg__sub">Restored when the lid opens</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="Turn the display off when the lid is closed" tabindex="-1"><i></i></button>
+                    </li>
+                    <li class="ui-tg">
+                      <span class="ui-tg__text"><span class="ui-tg__label">Start at login</span><span class="ui-tg__sub">Through launchd</span></span>
+                      <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="Start at login" tabindex="-1"><i></i></button>
+                    </li>
+                  </ul>
+                </div>
+              </div></div>
+            </div>
+          </article>
+        </div>
+      </div>
+      <div class="grid">
+        <article class="card card--row card--open span-6">
+          <h3>Waits for Claude’s notification</h3>
+          <p>By default a waiting Codex session gets 10 s. When Claude finishes or asks a question, it usually gets 70 to 90 s, so its notification still goes out.</p>
+          <div class="panel">
+            <div class="stage stage--fade-b"><div class="at-rise fit" style="--fit-max:380px;--ax:32px;--ay:calc(100% - 180px);--ay-sm:calc(100% - 180px)">
+              <div class="ui ui-notify" data-ui="notify">
+                <ul class="ui-notify__list" data-notify-list>
+                  <li class="ui-note"><span class="ui-note__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.5a3.5 3.5 0 0 1 3.5 3.5v2.5l1.2 2H3.3l1.2-2V6A3.5 3.5 0 0 1 8 2.5z"/><path d="M6.5 13h3"/></svg></span><span class="ui-note__text"><span class="ui-note__title">Claude is waiting for your input<time datetime="PT0S">now</time></span><span class="ui-note__body">photo-app</span></span></li>
+                  <li class="ui-note"><span class="ui-note__ico"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.5a3.5 3.5 0 0 1 3.5 3.5v2.5l1.2 2H3.3l1.2-2V6A3.5 3.5 0 0 1 8 2.5z"/><path d="M6.5 13h3"/></svg></span><span class="ui-note__text"><span class="ui-note__title">Claude needs your permission to use Bash<time datetime="PT4M">4m</time></span><span class="ui-note__body">infra</span></span></li>
+                </ul>
+              </div>
+            </div></div>
+          </div>
+        </article>
+        <article class="card card--row card--open span-6">
+          <h3>Lets go at low battery or serious heat</h3>
+          <p>Low battery or serious heat brings normal sleep back, even during a hold by hand. A silent or exited session stops counting.</p>
+          <div class="panel">
+            <div class="stage stage--fade-b"><div class="at-rise fit" style="--fit-max:400px;--ax:max(32px, 50% - 200px);--ay:48px;--ay-sm:24px">
+              <div class="ui ui-panel ui-checks" data-ui="checklist">
+                <div class="ui-checks__head">
+                  <div class="ui-title">What lets the Mac sleep again</div>
+                  <span class="ui-spacer"></span>
+                  <div class="ui-meta" data-checks-count>5 of 5</div>
+                </div>
+                <div class="ui-checks__bar"><i data-checks-bar style="--k:1"></i></div>
+                <ul class="ui-checks__list">
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">On battery at 15% or less (the default)</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">Thermal state serious or critical</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">A session silent for 30 min (default)</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">A session whose process has exited</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">You quit the app</span></li>
+                </ul>
+              </div>
+            </div></div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section statement" id="why" data-moment="word-highlight" aria-label="Why it exists">
+    <div class="wrap">
+      <p class="t-label">Why it exists</p>
+      <p class="mo-wh__text">Closing a MacBook’s lid puts it to sleep, even with caffeinate running. Agent Lid Closed keeps it awake <strong>while an agent has work</strong>, or while you ask it to, then gives sleep back.</p>
+    </div>
+  </section>
+
+  <section class="section" id="limits" aria-labelledby="limits-h">
+    <div class="wrap">
+      <div class="grid fill">
+        <div class="span-5 stack-5">
+          <h2 id="limits-h">Wakes the Mac before a usage limit resets</h2>
+          <p class="t-lead">When a live Claude or Codex session stops at a subscription limit whose reset is known, the Mac can sleep, then wakes two minutes before the reset: within 24 hours in a terminal, seven days in T3 Code. A closed-lid wake is best effort.</p>
+          <p>With its auto-resume on, T3 Code continues the conversation at the reset, and with two accounts of one tool it can move it to the free one at once. Terminal Claude continues when its own setting for that is on.</p>
+          <a class="link" href="#faq">Read what wakes it</a>
+        </div>
+        <div class="frame frame--split frame--fill span-6 start-7" role="img" aria-label="The Usage Limits tab of Settings, with waking the Mac before usage resets and switching T3 Code accounts at a usage limit both turned on.">
+          <div class="stage stage--fade-br">
+            <div class="at-corner to-edge" style="--ax:56px;--ay:56px">
+              <div class="ui ui-panel ui-toggles" data-ui="toggles">
+                <div class="ui-head">
+                  <svg class="ui-icon ui-toggles__ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.5"/></svg>
+                  <div class="ui-title">Settings · Usage Limits</div>
+                  <span class="ui-spacer"></span>
+                  <div class="ui-meta" data-tg-count>2 of 2 on</div>
+                </div>
+                <ul class="ui-toggles__list">
+                  <li class="ui-tg">
+                    <span class="ui-tg__text"><span class="ui-tg__label">Wake the Mac before usage resets</span><span class="ui-tg__sub">Claude Code and Codex, two minutes early</span></span>
+                    <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="Wake the Mac before usage resets" tabindex="-1"><i></i></button>
+                  </li>
+                  <li class="ui-tg">
+                    <span class="ui-tg__text"><span class="ui-tg__label">Switch to another account at a usage limit</span><span class="ui-tg__sub">T3 Code: Claude, Claude - Second</span></span>
+                    <button class="ui-switch is-on" type="button" role="switch" aria-checked="true" aria-label="Switch to another account at a usage limit" tabindex="-1"><i></i></button>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section tools" id="tools" aria-labelledby="tools-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5 stack-5">
+          <h2 id="tools-h">Works with Claude Code, Codex and T3 Code</h2>
+          <p class="t-lead">The installer adds hooks only for the tools it finds. One tool is enough; a second Claude Code account can be added later in Settings.</p>
+        </div>
+        <ul class="rows span-6 start-7">
+          <li><span class="rows__name"><img data-icon="claude" src="assets/icons/claude.svg" alt="">Claude Code in a terminal</span><span class="rows__value">Hooks</span><p>Wakes before resets with version 2.1.234 or later.</p></li>
+          <li><span class="rows__name"><img data-icon="openai" src="assets/icons/openai.svg" alt="" class="ic-ink">Codex CLI</span><span class="rows__value">Hooks</span><p>Once you trust its hooks under /hooks. A wake does not start a new Codex turn.</p></li>
+          <li><span class="rows__name"><img data-icon="ui:messages-square" src="assets/icons/ui-messages-square.svg" alt="">T3 Code</span><span class="rows__value">Read directly</span><p>No hooks needed. T3 continues the conversation at the reset and can switch accounts.</p></li>
+          <li><span class="rows__name"><img data-icon="claude" src="assets/icons/claude.svg" alt="">Claude desktop, Code tab</span><span class="rows__value">Not yet confirmed</span><p>Loads the same settings, so it should appear like a terminal session.</p></li>
+          <li><span class="rows__name"><img data-icon="ui:cloud" src="assets/icons/ui-cloud.svg" alt="">Cloud sessions</span><span class="rows__value">Not tracked</span><p>Claude Code on the web, Chat and Cowork run off your Mac.</p></li>
+        </ul>
+      </div>
+      <div class="marquee" data-moment="marquee-row" data-moment-opts='{"speed": 32}' aria-label="Hook events it listens to">
+        <ul class="mo-mq__track"><li>UserPromptSubmit</li><li>PreToolUse</li><li>PostToolUse</li><li>Stop</li><li>StopFailure</li><li>SubagentStart</li><li>SubagentStop</li><li>Notification</li><li>PermissionRequest</li><li>SessionEnd</li></ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="install-h">Install the app from the terminal. <span class="muted">Free under the MIT licence.</span></h2>
+      </div>
+      <div class="grid">
+        <article class="card card--row card--open span-6">
+          <h3><img data-icon="apple" src="assets/icons/apple.svg" alt="" class="ic-ink" width="20" height="20"> macOS 14 or later</h3>
+          <p>Needs Swift 6.2 or later from the Command Line Tools and your administrator password once. Then restart open sessions, and trust the hooks in Codex under /hooks.</p>
+          <div class="panel">
+            <div class="cmd">
+              <div class="cmd__head"><span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>Terminal<button class="cmd__copy" type="button" data-copy="mac" aria-label="Copy the macOS install command"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M3 10.5V3.8A1.3 1.3 0 0 1 4.3 2.5H10"/></svg><span aria-live="polite">Copy</span></button></div>
+              <code id="cmd-mac"><span>$</span> git clone https://github.com/Jin-hiroo/agent-lid-closed.git &amp;&amp; cd agent-lid-closed &amp;&amp; ./scripts/install.sh</code>
+            </div>
+          </div>
+        </article>
+        <article class="card card--row card--open span-6">
+          <h3><img data-icon="windows" src="assets/icons/windows.svg" alt="" width="20" height="20"> Windows 10 or 11</h3>
+          <p>Needs Node.js 22.16 or later and no administrator rights. Then restart open sessions, and trust the hooks in Codex under /hooks. The menus are in Japanese.</p>
+          <div class="panel">
+            <div class="cmd">
+              <div class="cmd__head"><span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>PowerShell<button class="cmd__copy" type="button" data-copy="win" aria-label="Copy the Windows install command"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M3 10.5V3.8A1.3 1.3 0 0 1 4.3 2.5H10"/></svg><span aria-live="polite">Copy</span></button></div>
+              <code id="cmd-win"><span>&gt;</span> git clone https://github.com/Jin-hiroo/agent-lid-closed.git; cd agent-lid-closed
+<span>&gt;</span> powershell -ExecutionPolicy Bypass -File .\windows\install.ps1</code>
+            </div>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="faq" style="--hm: 2" aria-labelledby="faq-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5 stack-5">
+          <h2 id="faq-h">Questions</h2>
+          <p class="t-lead">Something else, or a result from the Claude desktop app? Open an issue on GitHub.</p>
+          <a class="link" href="https://github.com/Jin-hiroo/agent-lid-closed/issues">Open an issue</a>
+          <div class="panel faq__panel" role="img" aria-label="The Keep Mac Awake submenu: until you turn it off, for 30 minutes, 1, 2 or 4 hours, or a custom time; 1 hour is chosen.">
+            <div class="stage stage--fade-b"><div class="at-rise" style="--ax:32px;--ay:32px;--ay-sm:24px">
+              <div class="ui ui-panel ui-checks" aria-hidden="true">
+                <div class="ui-checks__head"><div class="ui-title">Keep Mac Awake</div><span class="ui-spacer"></span><div class="ui-meta">1 h left</div></div>
+                <ul class="ui-checks__list">
+                  <li class="ui-check"><span class="ui-check__label">Until I Turn It Off</span></li>
+                  <li class="ui-check"><span class="ui-check__label">For 30 min</span></li>
+                  <li class="ui-check is-done"><span class="ui-check__box"><svg viewBox="0 0 16 16"><path d="m4.5 8.2 2.3 2.3 4.7-5"/></svg></span><span class="ui-check__label">For 1 h</span></li>
+                  <li class="ui-check"><span class="ui-check__label">For 2 h</span></li>
+                  <li class="ui-check"><span class="ui-check__label">For 4 h</span></li>
+                  <li class="ui-check"><span class="ui-check__label">For a Custom Time…</span></li>
+                </ul>
+              </div>
+            </div></div>
+          </div>
+        </div>
+        <div class="faq span-6 start-7">
+          <div class="faq__item"><h3>What does it change on my Mac?</h3><p>It sets <code>pmset disablesleep</code> while an agent works and clears it once all of them wait, after a short grace period. Quitting restores normal sleep and brightness.</p></div>
+          <div class="faq__item"><h3>Can I keep the Mac awake without an agent?</h3><p>Yes. Keep Mac Awake holds sleep off until you turn it off, or for 30 min, 1, 2 or 4 h, or a time you type, up to 7 days. Low battery and heat still let it sleep.</p></div>
+          <div class="faq__item"><h3>What does the app read from my sessions?</h3><p>Only on your Mac: hook events, Claude’s status-line usage and reset times, the usage-limit fields of Codex’s event log, a Claude transcript to spot an interrupted turn, and T3 Code’s database, read-only. No conversation text or account tokens are kept or sent.</p></div>
+          <div class="faq__item"><h3>What wakes the Mac before a reset?</h3><p>A root-owned helper that can only schedule this app’s wake alarms, within the next seven days. A closed-lid wake is best effort, so test it plugged in.</p></div>
+          <div class="faq__item"><h3>How do I remove the app?</h3><p>From the clone, run <code>./scripts/uninstall.sh</code> on a Mac, or <code>powershell -ExecutionPolicy Bypass -File .\windows\uninstall.ps1</code> on Windows. Each removes the app and every hook it added; T3 Code’s auto-resume setting stays as you left it.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer closing footer--dark ground-inverse" id="contact" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--type">
+      <div class="section-head">
+        <h2 id="close-h">Let your agents work with the lid closed</h2>
+        <p>Free and open source. macOS 14 or later; a Windows version for 10 and 11.</p>
+      </div>
+      <a class="btn btn--primary btn--xl btn--wide" href="#install">Install on your Mac<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="#top"><span class="mark" data-mark="dots" aria-hidden="true"></span>Agent Lid Closed</a>
+          <p class="footer__lede">Sleep control for AI coding agents.</p>
+        </div>
+        <div class="span-2 footer__col"><h3>Product</h3><ul><li><a href="#product">Sessions</a></li><li><a href="#how">Sleep rules</a></li><li><a href="#limits">Usage limits</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Tools</h3><ul><li><a href="#tools">Claude Code</a></li><li><a href="#tools">Codex</a></li><li><a href="#tools">T3 Code</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Install</h3><ul><li><a href="#install">macOS</a></li><li><a href="#install">Windows</a></li><li><a href="#faq">Uninstall</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Project</h3><ul><li><a href="https://github.com/Jin-hiroo/agent-lid-closed">Source code</a></li><li><a href="https://github.com/Jin-hiroo/agent-lid-closed/releases">Releases</a></li><li><a href="https://github.com/Jin-hiroo/agent-lid-closed/blob/main/LICENSE">MIT licence</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Agent Lid Closed. Not affiliated with Anthropic or OpenAI.</span>
+        <div class="socials"></div>
+        <span>Product names and logos are trademarks of their owners</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // the install commands' copy buttons: the glyph's label reads Copied for 1.6 s, then returns
+  document.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', async () => {
+    const code = document.getElementById('cmd-' + b.dataset.copy);
+    const text = code.textContent.replace(/^[ \t]*[$>][ \t]*/gm, '');
+    const label = b.querySelector('span');
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch { ok = false; }
+    label.textContent = ok ? 'Copied' : 'Select to copy';
+    clearTimeout(b._t);
+    b._t = setTimeout(() => { label.textContent = 'Copy'; }, 1600);
+  }));
+</script>
+<script type="module" src="assets/system.js"></script>
+<script type="module" src="assets/motion/motion.js"></script>
+<script type="module" src="assets/layout/layout.js"></script>
+<script type="module" src="assets/diagrams/mount.js"></script>
+</body>
+</html>
