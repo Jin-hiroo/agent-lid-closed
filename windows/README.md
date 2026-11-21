@@ -15,7 +15,7 @@ The Windows version of [Agent Lid Closed](../README.md). It has the same feature
 - **Switches T3 Code accounts at a usage limit**, and turns on T3 Code's native **auto-resume** after a reset.
 - **Keep awake by hand**: until you turn it off, for 30 min, 1, 2 or 4 h, or for a typed time (`90`, `1:30`, `2h`, `1h 30m`), up to 7 days.
 - **Battery floor.** At 15% or less on battery, normal sleep comes back.
-- **Notification-area icon, menu and Settings window** in Japanese, with each session's tool or account, project and activity.
+- **Notification-area icon, menu and Settings window** in Japanese, in the Windows 11 style: light or dark with the system, your accent colour, and sharp at any display scale. Each session shows its project, tool or account, activity and whether it keeps the PC awake.
 
 ## TL;DR: install with an AI agent
 
@@ -176,7 +176,7 @@ T3 Code     ── read-only database, every 5 s ──────────�
                                                                     └─ icon, menu, Settings
 ```
 
-The Node.js side (`agent-lid.mjs`, `agent-lid-hook.mjs`, `lib/`) is a port of the macOS app's logic: the same hook handling and session files, grace periods and stale limits, Claude interrupt detection, Codex event-log quota reader, T3 Code reader and account switching. `AgentLidClosed.exe` is a small C# program (`native/AgentLidClosed.cs`, built with the .NET Framework's `csc` by `build.ps1`) that owns everything that needs Windows APIs. It starts the Node.js watcher, restarts it if it exits, and releases the hold whenever it isn't running or stops answering.
+The Node.js side (`agent-lid.mjs`, `agent-lid-hook.mjs`, `lib/`) is a port of the macOS app's logic: the same hook handling and session files, grace periods and stale limits, Claude interrupt detection, Codex event-log quota reader, T3 Code reader and account switching. `AgentLidClosed.exe` is a small C# program (`native/AgentLidClosed.cs`, with its menu and Settings window in `native/Ui.cs`, built with the .NET Framework's `csc` by `build.ps1`) that owns everything that needs Windows APIs. It starts the Node.js watcher, restarts it if it exits, and releases the hold whenever it isn't running or stops answering.
 
 - **Holding sleep off.** Like `pmset disablesleep 1` on macOS: the power plan's lid close action is set to *Do nothing* for AC and battery, and `SetThreadExecutionState(ES_SYSTEM_REQUIRED)` blocks idle sleep. The previous lid action is saved to `power-hold.json` before any change and deleted only once it's verifiably back. It's put back when the hold ends, on quit, on sign-out, and on the next start after a crash; a restore that fails is retried every 15 s. If another power plan becomes active, the hold moves to it.
 - **Sleeping with the lid closed.** When the hold ends with the lid closed and no external display, the tray reads the restored lid action, asks the watcher to confirm that no agent started meanwhile, checks the lid, displays and power source again, and then sleeps or hibernates as that action says.
@@ -209,4 +209,4 @@ powershell -ExecutionPolicy Bypass -File windows\build.ps1     # windows\AgentLi
 node windows\agent-lid.mjs run --dry-run                       # decide without a tray; power changes are only logged
 ```
 
-With `AGENT_LID_STATE_DIR` set, sessions, settings and the log go to that folder, and T3 Code is ignored unless `AGENT_LID_T3_DIR` names a userdata folder. `AGENT_LID_HOME` points the hook installer at another home folder. In a dry run, `AGENT_LID_FAKE_LID=closed` pretends the lid is closed until a file named `lid-open` appears in the state folder. `AgentLidClosed.exe render-settings <status.json> <folder>` draws the Settings window's tabs to PNG files.
+With `AGENT_LID_STATE_DIR` set, sessions, settings and the log go to that folder, and T3 Code is ignored unless `AGENT_LID_T3_DIR` names a userdata folder. `AGENT_LID_HOME` points the hook installer at another home folder. In a dry run, `AGENT_LID_FAKE_LID=closed` pretends the lid is closed until a file named `lid-open` appears in the state folder. `AgentLidClosed.exe render-settings <status.json> <folder> [light|dark]` draws the Settings window's pages to PNG files, and `AgentLidClosed.exe render-menu <status.json> <file.png> [light|dark]` draws the menu.

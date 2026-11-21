@@ -68,27 +68,32 @@ struct MenuContent: View {
     let openSettings: () -> Void
 
     var body: some View {
-        Text(controller.headline)
-        Text(controller.detail)
+        // Menus may show labels as titles only; here the icons carry state, so they're kept.
+        Group { items }
+            .labelStyle(.titleAndIcon)
+    }
+
+    @ViewBuilder private var items: some View {
+        // The menu bar icon's symbol beside the headline, then one item per detail line.
+        Label(controller.headline, systemImage: controller.symbolName)
+        ForEach(Array(controller.detail.split(separator: "\n").enumerated()), id: \.offset) { line in
+            Text(String(line.element))
+        }
         Divider()
         if controller.evaluation.sessions.isEmpty {
             Text("No agent sessions")
         } else {
+            // Filled while the session keeps the Mac awake, hollow while it waits for you.
             ForEach(controller.evaluation.sessions) { session in
-                Text("\(session.accountName) · \(session.project): \(session.label) · \(Self.age(session.since))")
+                Label("\(session.accountName) · \(session.project): \(session.label) · \(Self.age(session.since))",
+                      systemImage: session.keepsAwake ? "circle.fill" : "circle")
             }
         }
         Divider()
-        Menu(controller.manualActive ? "Keep Mac Awake (On)" : "Keep Mac Awake") {
-            if controller.manualActive {
-                Button("Turn Off (Back to Automatic)") { controller.stopManual() }
-                Divider()
-            }
-            Button("Until I Turn It Off") { controller.startManual(for: nil) }
-            ForEach([30, 60, 120, 240], id: \.self) { minutes in
-                Button("For \(ManualAwake.describe(Double(minutes) * 60))") { controller.startManual(for: Double(minutes) * 60) }
-            }
-            Button("For a Custom Time…") { askForDuration() }
+        Menu {
+            keepAwakeItems
+        } label: {
+            Label(controller.manualActive ? "Keep Mac Awake (On)" : "Keep Mac Awake", systemImage: "sun.max")
         }
         Toggle("Automatic Mode", isOn: Binding(get: { controller.autoEnabled },
                                                set: { controller.setAutoEnabled($0) }))
@@ -101,12 +106,34 @@ struct MenuContent: View {
                                                                   set: { controller.setSwitchEnabled($0) }))
         }
         Divider()
-        Button("Settings…", action: openSettings)
-            .keyboardShortcut(",")
-        Button("Open Log") { NSWorkspace.shared.open(Paths.logFile) }
+        Button(action: openSettings) {
+            Label("Settings…", systemImage: "gearshape")
+        }
+        .keyboardShortcut(",")
+        Button {
+            NSWorkspace.shared.open(Paths.logFile)
+        } label: {
+            Label("Open Log", systemImage: "doc.text")
+        }
         Divider()
-        Button("Quit (restores normal sleep)") { NSApp.terminate(nil) }
-            .keyboardShortcut("q")
+        Button {
+            NSApp.terminate(nil)
+        } label: {
+            Label("Quit (restores normal sleep)", systemImage: "power")
+        }
+        .keyboardShortcut("q")
+    }
+
+    @ViewBuilder private var keepAwakeItems: some View {
+        if controller.manualActive {
+            Button("Turn Off (Back to Automatic)") { controller.stopManual() }
+            Divider()
+        }
+        Button("Until I Turn It Off") { controller.startManual(for: nil) }
+        ForEach([30, 60, 120, 240], id: \.self) { minutes in
+            Button("For \(ManualAwake.describe(Double(minutes) * 60))") { controller.startManual(for: Double(minutes) * 60) }
+        }
+        Button("For a Custom Time…") { askForDuration() }
     }
 
     /// A small prompt for a typed duration; the menu itself can't hold a text field.

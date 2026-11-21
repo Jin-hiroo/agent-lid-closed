@@ -111,7 +111,7 @@ struct SettingsView: View {
             IntegrationSettings(status: status)
                 .tabItem { Label("Integrations", systemImage: "puzzlepiece.extension") }.tag(3)
         }
-        .frame(width: 560, height: 500)
+        .frame(width: 560, height: 560)
         .onAppear { status.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             status.refresh()
@@ -127,15 +127,22 @@ private struct GeneralSettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Keep the Mac awake while agents work", isOn: Binding(
-                    get: { controller.autoEnabled }, set: { controller.setAutoEnabled($0) }))
-                Toggle("Turn the display off when the lid is closed", isOn: Binding(
-                    get: { controller.dimEnabled }, set: { controller.setDimEnabled($0) }))
+                StatusHeader(controller: controller)
+            }
+            Section {
+                Toggle(isOn: Binding(get: { controller.autoEnabled }, set: { controller.setAutoEnabled($0) })) {
+                    Text("Keep the Mac awake while agents work")
+                    Text("Even with the lid closed. When every agent is waiting for you, the Mac sleeps normally.")
+                }
+                Toggle(isOn: Binding(get: { controller.dimEnabled }, set: { controller.setDimEnabled($0) })) {
+                    Text("Turn the display off when the lid is closed")
+                    Text("The backlight goes to 0% and comes back when you open the lid.")
+                }
                 Toggle("Start at login", isOn: Binding(
                     get: { status.startsAtLogin }, set: { status.setStartsAtLogin($0) }))
                     .disabled(!status.loginItemInstalled)
             } footer: {
-                Text("While an agent works, the Mac stays awake even with the lid closed. When every agent is waiting for you, it sleeps normally. Quitting the app restores normal sleep.")
+                Text("Quitting the app restores normal sleep and brightness.")
                     .settingsFootnote()
             }
             Section {
@@ -221,21 +228,22 @@ private struct UsageLimitSettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Wake the Mac before usage resets", isOn: Binding(
-                    get: { controller.wakeEnabled }, set: { controller.setWakeEnabled($0) }))
+                Toggle(isOn: Binding(get: { controller.wakeEnabled }, set: { controller.setWakeEnabled($0) })) {
+                    Text("Wake the Mac before usage resets")
+                    Text("When Claude Code or Codex stops at a subscription limit, the Mac sleeps and wakes two minutes before the limit resets, so the session can continue.")
+                }
                 if !status.wakeSetUp {
                     Label("Wake alarms aren't set up. Run scripts/install.sh.", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                 }
-            } footer: {
-                Text("When Claude Code or Codex stops at a subscription limit, the Mac sleeps and wakes two minutes before the limit resets, so the session can continue.")
-                    .settingsFootnote()
             }
             Section {
                 // Shows off while it can't apply; the saved choice returns once it can.
-                Toggle("Switch to another account at a usage limit", isOn: Binding(
-                    get: { canSwitch && controller.switchEnabled }, set: { controller.setSwitchEnabled($0) }))
-                    .disabled(!canSwitch)
+                Toggle(isOn: Binding(get: { canSwitch && controller.switchEnabled }, set: { controller.setSwitchEnabled($0) })) {
+                    Text("Switch to another account at a usage limit")
+                    Text("A conversation that hits one account's limit continues right away on another account of the same tool, instead of waiting for the reset.")
+                }
+                .disabled(!canSwitch)
                 ForEach(status.switchableAccounts, id: \.tool) { group in
                     LabeledContent(group.tool, value: group.names.joined(separator: ", "))
                 }
@@ -245,9 +253,6 @@ private struct UsageLimitSettings: View {
                 if let result = controller.switchStatus { Text(result).settingsFootnote() }
             } header: {
                 Text("T3 Code")
-            } footer: {
-                Text("A conversation that hits one account's limit continues right away on another account of the same tool, instead of waiting for the reset.")
-                    .settingsFootnote()
             }
         }
         .formStyle(.grouped)
@@ -352,6 +357,36 @@ private struct HookRow: View {
         } label: {
             Text(Setup.displayPath(file.path)).truncationMode(.middle).lineLimit(1)
         }
+    }
+}
+
+/// The current state, as the menu shows it, at the top of General.
+private struct StatusHeader: View {
+    let controller: Controller
+
+    private var tone: Color {
+        controller.symbolName == "exclamationmark.triangle" ? .orange : .accentColor
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: controller.symbolName)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(tone)
+                .frame(width: 44, height: 44)
+                .background(tone.opacity(0.15), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(controller.headline)
+                    .font(.headline)
+                Text(controller.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
     }
 }
 
